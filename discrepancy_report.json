@@ -1,0 +1,687 @@
+{
+  "project": "West 34th Street Hotel",
+  "schedule_file": "/home/claude/output/schedule_ground_truth.json",
+  "soo_file": "/home/claude/output/soo_refs.json",
+  "takeoff_file": null,
+  "generated": "2026-06-08T08:30:50.012812",
+  "summary": {
+    "schedule_tags": 109,
+    "soo_tags": 82,
+    "confirmed_both": 82,
+    "in_schedule_not_soo": 27,
+    "in_soo_not_schedule": 0,
+    "needs_review": 15,
+    "high_severity": 5,
+    "medium_severity": 2,
+    "low_severity": 20
+  },
+  "discrepancies": [
+    {
+      "tag": "AS-34-1",
+      "system": "Air Separator",
+      "classification": "Hydronic / Ancillary",
+      "floor": "34th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "AS-34-2",
+      "system": "Air Separator",
+      "classification": "Hydronic / Ancillary",
+      "floor": "34th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "AS-34-3",
+      "system": "Air Separator",
+      "classification": "Hydronic / Ancillary",
+      "floor": "34th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "AS-34-4",
+      "system": "Air Separator",
+      "classification": "Hydronic / Ancillary",
+      "floor": "34th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "EUH-1-1",
+      "system": "Electric Unit Heater",
+      "classification": "Terminal / EUH",
+      "floor": "1st Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "HIGH",
+      "description": "Device is scheduled with integral/standalone thermostat and has no SOO sequence. Confirm whether BMS monitoring point (alarm, status, or sensor) is required.",
+      "action": "Clarify BMS scope with engineer. If monitoring required, add DI status point and program alarm. If standalone only, document as excluded.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "EUH-35-1",
+      "system": "Electric Unit Heater",
+      "classification": "Terminal / EUH",
+      "floor": "35th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "HIGH",
+      "description": "Device is scheduled with integral/standalone thermostat and has no SOO sequence. Confirm whether BMS monitoring point (alarm, status, or sensor) is required.",
+      "action": "Clarify BMS scope with engineer. If monitoring required, add DI status point and program alarm. If standalone only, document as excluded.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "EUH-35-2",
+      "system": "Electric Unit Heater",
+      "classification": "Terminal / EUH",
+      "floor": "35th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "HIGH",
+      "description": "Device is scheduled with integral/standalone thermostat and has no SOO sequence. Confirm whether BMS monitoring point (alarm, status, or sensor) is required.",
+      "action": "Clarify BMS scope with engineer. If monitoring required, add DI status point and program alarm. If standalone only, document as excluded.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "EUH-SC-1",
+      "system": "Electric Unit Heater",
+      "classification": "Terminal / EUH",
+      "floor": "Subcellar",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "HIGH",
+      "description": "Device is scheduled with integral/standalone thermostat and has no SOO sequence. Confirm whether BMS monitoring point (alarm, status, or sensor) is required.",
+      "action": "Clarify BMS scope with engineer. If monitoring required, add DI status point and program alarm. If standalone only, document as excluded.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "EUH-SC-2",
+      "system": "Electric Unit Heater",
+      "classification": "Terminal / EUH",
+      "floor": "Subcellar",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "HIGH",
+      "description": "Device is scheduled with integral/standalone thermostat and has no SOO sequence. Confirm whether BMS monitoring point (alarm, status, or sensor) is required.",
+      "action": "Clarify BMS scope with engineer. If monitoring required, add DI status point and program alarm. If standalone only, document as excluded.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "FCU-A",
+      "system": "Fan Coil Unit",
+      "classification": "Terminal / FCU",
+      "floor": "Guestrooms",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "FCU-B",
+      "system": "Fan Coil Unit",
+      "classification": "Terminal / FCU",
+      "floor": "Guestrooms",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "FPP-12-3",
+      "system": "Freeze Protection Circulating Pump",
+      "classification": "Hydronic / Pump",
+      "floor": "12th Floor",
+      "issue": "primary_plant_no_soo",
+      "severity": "MEDIUM",
+      "description": "Primary plant device in schedule has no confirmed SOO sequence.",
+      "action": "Confirm staging/lead-lag logic, setpoints, and VFD control sequence with engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "FPP-12-4",
+      "system": "Freeze Protection Circulating Pump",
+      "classification": "Hydronic / Pump",
+      "floor": "12th Floor",
+      "issue": "primary_plant_no_soo",
+      "severity": "MEDIUM",
+      "description": "Primary plant device in schedule has no confirmed SOO sequence.",
+      "action": "Confirm staging/lead-lag logic, setpoints, and VFD control sequence with engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "TF-1",
+      "system": "Low Voltage Closet Ventilation Fan",
+      "classification": "Exhaust / Fan",
+      "floor": "Unknown",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "UH-12-1",
+      "system": "Hot Water Unit Heater",
+      "classification": "Terminal / UH",
+      "floor": "12th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "UH-12-2",
+      "system": "Hot Water Unit Heater",
+      "classification": "Terminal / UH",
+      "floor": "12th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "UH-12-3",
+      "system": "Hot Water Unit Heater",
+      "classification": "Terminal / UH",
+      "floor": "12th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "UH-34-1",
+      "system": "Hot Water Unit Heater",
+      "classification": "Terminal / UH",
+      "floor": "34th Floor",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "UH-C-1",
+      "system": "Hot Water Unit Heater",
+      "classification": "Terminal / UH",
+      "floor": "Cellar",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "UH-SC-1",
+      "system": "Hot Water Unit Heater",
+      "classification": "Terminal / UH",
+      "floor": "Subcellar",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "UH-SC-2",
+      "system": "Hot Water Unit Heater",
+      "classification": "Terminal / UH",
+      "floor": "Subcellar",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "VAV-10in",
+      "system": "VAV Terminal Box",
+      "classification": "Terminal / VAV",
+      "floor": "Various",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "VAV-12in",
+      "system": "VAV Terminal Box",
+      "classification": "Terminal / VAV",
+      "floor": "Various",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "VAV-14in",
+      "system": "VAV Terminal Box",
+      "classification": "Terminal / VAV",
+      "floor": "Various",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "VAV-16in",
+      "system": "VAV Terminal Box",
+      "classification": "Terminal / VAV",
+      "floor": "Various",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "VAV-6in",
+      "system": "VAV Terminal Box",
+      "classification": "Terminal / VAV",
+      "floor": "Various",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    },
+    {
+      "tag": "VAV-8in",
+      "system": "VAV Terminal Box",
+      "classification": "Terminal / VAV",
+      "floor": "Various",
+      "issue": "in_schedule_not_in_soo",
+      "severity": "LOW",
+      "description": "Device appears in schedule but was not found in SOO.",
+      "action": "Verify device requires BMS integration. If so, request SOO from engineer.",
+      "source_schedule": true,
+      "source_soo": false,
+      "source_takeoff": false,
+      "resolution": null
+    }
+  ],
+  "confirmed": [
+    "AC-C-1",
+    "ACU-35-1",
+    "ACU-35-2",
+    "ACU-35-3",
+    "ACU-36-1",
+    "AHU-1M-1",
+    "AHU-1M-2",
+    "ASHP-1",
+    "ASHP-2",
+    "ASHP-3",
+    "BT-34-1",
+    "BT-34-2",
+    "BT-34-3",
+    "DOAS-12-1",
+    "DOAS-12-2",
+    "DOAS-1M-1",
+    "EF-1M-1",
+    "EF-C-1",
+    "ERV-2M-1",
+    "ERV-35-1",
+    "ESP-12-1",
+    "FCU-12-1",
+    "FCU-2-1",
+    "FCU-2M-1",
+    "FCU-2M-2",
+    "FCU-2M-3",
+    "FCU-33-1",
+    "FCU-33-2",
+    "FCU-33-3",
+    "FCU-33-4",
+    "FCU-C-1",
+    "FCU-C-2",
+    "FCU-C-3",
+    "FCU-C-4",
+    "FCU-C-5",
+    "FCU-C-6",
+    "FCU-SC-1",
+    "FCU-SC-2",
+    "FCU-SC-3",
+    "FCU-SC-4",
+    "FCU-SC-5",
+    "FCU-SC-6",
+    "FCU-SC-7",
+    "FCU-SC-8",
+    "FOP-SC-1",
+    "FOP-SC-2",
+    "FPP-12-1",
+    "FPP-12-2",
+    "FPP-1M-1",
+    "FPP-1M-2",
+    "FPP-34-1",
+    "FTR-A",
+    "GFU-34-1",
+    "GFU-34-2",
+    "GX-12-1",
+    "GX-12-2",
+    "GX-35-1",
+    "HF-2M-1",
+    "HPF-35-1",
+    "HWC-12-1",
+    "HWC-12-2",
+    "HWC-34-1",
+    "MUA-1M-1",
+    "PCHWP-34-1",
+    "PCHWP-34-2",
+    "PCHWP-34-3",
+    "PFHX-34-1",
+    "PFHX-34-2",
+    "PFHX-34-3",
+    "PFSP-12-1",
+    "PFSP-1M-1",
+    "PFSP-2M-1",
+    "PHWP-34-1",
+    "PHWP-34-3",
+    "SCHWP-34-1",
+    "SCHWP-34-2",
+    "SCHWP-34-3",
+    "SHWP-34-1",
+    "SHWP-34-2",
+    "SHWP-34-3",
+    "SPF-35-1",
+    "SPF-36-1"
+  ],
+  "needs_review": [
+    "FCU-A",
+    "FCU-B",
+    "FPP-12-3",
+    "FPP-12-4",
+    "TF-1",
+    "AS-34-1",
+    "AS-34-2",
+    "AS-34-3",
+    "AS-34-4",
+    "VAV-6in",
+    "VAV-8in",
+    "VAV-10in",
+    "VAV-12in",
+    "VAV-14in",
+    "VAV-16in"
+  ],
+  "stats_by_classification": {
+    "Primary Plant / Heat Pump": {
+      "total": 3,
+      "confirmed": 3,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Air Handling / DOAS": {
+      "total": 3,
+      "confirmed": 3,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Air Handling / MUA": {
+      "total": 1,
+      "confirmed": 1,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Air Quality / ESP": {
+      "total": 1,
+      "confirmed": 1,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Air Handling / AHU": {
+      "total": 2,
+      "confirmed": 2,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Air Handling / ERV": {
+      "total": 2,
+      "confirmed": 2,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Terminal / FCU": {
+      "total": 25,
+      "confirmed": 23,
+      "discrepancy": 0,
+      "review": 2
+    },
+    "Terminal / Split AC": {
+      "total": 5,
+      "confirmed": 5,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Terminal / EUH": {
+      "total": 5,
+      "confirmed": 0,
+      "discrepancy": 5,
+      "review": 0
+    },
+    "Terminal / UH": {
+      "total": 7,
+      "confirmed": 0,
+      "discrepancy": 7,
+      "review": 0
+    },
+    "Terminal / FTR": {
+      "total": 1,
+      "confirmed": 1,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Hydronic / HW Coil": {
+      "total": 3,
+      "confirmed": 3,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Primary Plant / HX": {
+      "total": 3,
+      "confirmed": 3,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Hydronic / Pump": {
+      "total": 18,
+      "confirmed": 16,
+      "discrepancy": 0,
+      "review": 2
+    },
+    "Hydronic / Tank": {
+      "total": 3,
+      "confirmed": 3,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Hydronic / Ancillary": {
+      "total": 6,
+      "confirmed": 2,
+      "discrepancy": 0,
+      "review": 4
+    },
+    "Life Safety / Fan": {
+      "total": 9,
+      "confirmed": 9,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Exhaust / Fan": {
+      "total": 4,
+      "confirmed": 3,
+      "discrepancy": 0,
+      "review": 1
+    },
+    "Ancillary / FOP": {
+      "total": 2,
+      "confirmed": 2,
+      "discrepancy": 0,
+      "review": 0
+    },
+    "Terminal / VAV": {
+      "total": 6,
+      "confirmed": 0,
+      "discrepancy": 0,
+      "review": 6
+    }
+  },
+  "stats_by_floor": {
+    "Roof": {
+      "total": 3,
+      "discrepancy": 0
+    },
+    "1st/Mezzanine": {
+      "total": 8,
+      "discrepancy": 0
+    },
+    "12th Floor": {
+      "total": 16,
+      "discrepancy": 3
+    },
+    "Subcellar": {
+      "total": 15,
+      "discrepancy": 4
+    },
+    "2nd Floor Mezz": {
+      "total": 5,
+      "discrepancy": 0
+    },
+    "35th Floor": {
+      "total": 9,
+      "discrepancy": 2
+    },
+    "Guestrooms": {
+      "total": 2,
+      "discrepancy": 0
+    },
+    "Cellar": {
+      "total": 9,
+      "discrepancy": 1
+    },
+    "2nd Floor": {
+      "total": 1,
+      "discrepancy": 0
+    },
+    "33rd Floor": {
+      "total": 4,
+      "discrepancy": 0
+    },
+    "36th Floor": {
+      "total": 2,
+      "discrepancy": 0
+    },
+    "1st Floor": {
+      "total": 1,
+      "discrepancy": 1
+    },
+    "34th Floor": {
+      "total": 26,
+      "discrepancy": 1
+    },
+    "Multiple": {
+      "total": 1,
+      "discrepancy": 0
+    },
+    "Unknown": {
+      "total": 1,
+      "discrepancy": 0
+    },
+    "Various": {
+      "total": 6,
+      "discrepancy": 0
+    }
+  }
+}
