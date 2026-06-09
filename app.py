@@ -6,6 +6,7 @@ Run: streamlit run app.py
 
 import json, os, io, base64
 from material_module import module_material, init_pricebooks
+from markup_ui import module_markup
 from pathlib import Path
 from datetime import date
 from collections import defaultdict
@@ -33,15 +34,101 @@ PHASES = list(DEFAULT_RATES.keys())
 MODULE_ORDER = ["Takeoff","Point List","Estimate","Proposal"]
 
 # ── State ─────────────────────────────────────────────────────────────────────
+# ── Persistent storage helpers ───────────────────────────────────────────────
+
+def _storage_save(key, value):
+    """Save to Streamlit persistent storage. Falls back silently if unavailable."""
+    try:
+        import json
+        storage = st.connection("storage", type="st.connections.StorageConnection")             if hasattr(st, "connection") else None
+        if storage:
+            storage.put(key, json.dumps(value, default=str))
+            return True
+    except Exception:
+        pass
+    # Fallback: use window.storage via components if available
+    try:
+        import streamlit.components.v1 as components
+        import json
+        js = f"""
+        <script>
+        try {{
+            window.parent.localStorage.setItem({json.dumps(key)}, {json.dumps(json.dumps(value, default=str))});
+        }} catch(e) {{}}
+        </script>
+        """
+        components.html(js, height=0)
+    except Exception:
+        pass
+    return False
+
+
+def _storage_load(key, default=None):
+    """Load from persistent storage."""
+    try:
+        storage = st.connection("storage", type="st.connections.StorageConnection")             if hasattr(st, "connection") else None
+        if storage:
+            import json
+            raw = storage.get(key)
+            if raw:
+                return json.loads(raw)
+    except Exception:
+        pass
+    return default
+
+
+def _save_app_state():
+    """Persist clients and projects to storage."""
+    import json
+    try:
+        # Save clients (without binary template bytes — too large)
+        clients_serializable = {}
+        for cname, c in st.session_state.get("clients", {}).items():
+            clients_serializable[cname] = {
+                k: v for k, v in c.items()
+                if k not in ("pl_template_bytes", "prop_template_bytes")
+            }
+        # Save projects (without doc bytes — too large for storage)
+        projects_serializable = {}
+        for pname, p in st.session_state.get("projects", {}).items():
+            projects_serializable[pname] = {
+                k: v for k, v in p.items()
+                if k not in ("docs",)
+            }
+        _storage_save("bms_clients",  clients_serializable)
+        _storage_save("bms_projects", projects_serializable)
+    except Exception:
+        pass
+
+
 def init():
     defaults = {
         "clients":{}, "projects":{},
         "active_project":None, "active_module":"Takeoff",
-        "nav":"Overview", "ai_history":[]
+        "nav":"Overview", "ai_history":[],
+        "storage_loaded": False,
     }
     for k,v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+    # Load persisted data on first run
+    if not st.session_state.get("storage_loaded"):
+        saved_clients  = _storage_load("bms_clients",  {})
+        saved_projects = _storage_load("bms_projects", {})
+        if saved_clients:
+            # Merge — don't overwrite if session already has data
+            for k,v in saved_clients.items():
+                if k not in st.session_state["clients"]:
+                    st.session_state["clients"][k] = v
+        if saved_projects:
+            for k,v in saved_projects.items():
+                if k not in st.session_state["projects"]:
+                    # Re-attach empty docs dict (bytes not persisted)
+                    v.setdefault("docs", {})
+                    v.setdefault("doc_names", {})
+                    st.session_state["projects"][k] = v
+        st.session_state["storage_loaded"] = True
 
 def new_project(name, client, bid_date, address):
     return {
@@ -199,6 +286,11 @@ def page_overview():
         if not any_alert:
             st.success("All clear — no blocking issues")
 
+    # ── Product status panel (collapsible — for interview use) ────────────────
+    st.divider()
+    with st.expander("🗺 Product status & roadmap — click to expand during interview"):
+        _product_status_panel()
+
 # ── Clients ───────────────────────────────────────────────────────────────────
 def page_clients():
     st.title("Clients")
@@ -258,6 +350,7 @@ def page_clients():
                         entry["prop_template_bytes"] = prop_file.read()
                         entry["prop_template_name"]  = prop_file.name
                     st.session_state.clients[cname] = entry
+                    _save_app_state()
                     st.success(f"✅ '{cname}' saved.")
                     st.rerun()
 
@@ -309,6 +402,7 @@ def page_projects_list():
                     st.session_state.projects[pname] = p
                     st.session_state.active_project  = pname
                     st.session_state.active_module   = "Takeoff"
+                    _save_app_state()
                     st.success(f"✅ '{pname}' created.")
                     st.rerun()
 
@@ -340,6 +434,7 @@ def page_project_detail(p):
     hc.markdown(f"## {p['name']}")
     hc.caption(f"{p.get('address','—')} · Client: {p.get('client','—')} · Bid: {p.get('bid_date','TBD')}")
 
+    # Build tab labels
     tab_labels = []
     for mod in MODULE_ORDER + ["AI Advisor"]:
         if mod == "AI Advisor":
@@ -350,12 +445,16 @@ def page_project_detail(p):
             s = module_status(p,mod)
             icon = "✅" if s=="done" else "⚠️" if s=="issues" else "📋"
             tab_labels.append(f"{icon} {mod}")
+    tab_labels.append("🖊 Drawing Markup")
 
     tabs = st.tabs(tab_labels)
-    handlers = [module_takeoff, module_point_list, module_estimate, module_proposal, module_ai_advisor]
-    for tab,mod,handler in zip(tabs, MODULE_ORDER+["AI Advisor"], handlers):
+    handlers = [module_takeoff, module_point_list, module_estimate,
+                module_proposal, module_ai_advisor, module_markup]
+    all_mods = MODULE_ORDER + ["AI Advisor", "Drawing Markup"]
+
+    for tab, mod, handler in zip(tabs, all_mods, handlers):
         with tab:
-            if mod not in ("AI Advisor",) and module_locked(p, mod):
+            if mod not in ("AI Advisor", "Drawing Markup") and module_locked(p, mod):
                 prev = MODULE_ORDER[MODULE_ORDER.index(mod)-1]
                 st.info(f"🔒 Complete **{prev}** first to unlock this module.")
             else:
@@ -990,6 +1089,342 @@ def export_prop_docx(text, p, tmpl_bytes=None):
 def page_reports():
     st.title("Reports")
     st.info("Coming soon: cross-project pipeline analytics, win/loss tracking, device type trends.")
+
+# ── Product status panel ──────────────────────────────────────────────────────
+
+MODULE_READINESS = [
+    {
+        "module":   "Takeoff",
+        "icon":     "📐",
+        "ready":    95,
+        "status":   "production",
+        "what_works": [
+            "Text-layer tag extraction from CAD PDFs",
+            "Schedule page auto-detection",
+            "SOO cross-check (3-way: schedule × SOO × drawing)",
+            "Amber/red/green/blue status per device",
+            "West 34th Hotel: 109 devices, 12 discrepancies confirmed",
+        ],
+        "gaps": [
+            "AI Takeoff button reads doc names, not PDF content (use JSON upload for demo)",
+        ],
+        "next": "Wire Claude Vision to read floor plan images for scanned PDFs",
+    },
+    {
+        "module":   "Drawing Markup",
+        "icon":     "🖊",
+        "ready":    90,
+        "status":   "production",
+        "what_works": [
+            "Search any tag → jump to page with highlight",
+            "Annotated PDF download with all 4 status colors",
+            "Legend page + summary overlay on page 1",
+            "Amber tags → Clarifications, Red tags → Exclusions (one click)",
+            "Progress bar with page count and schedule page detection",
+        ],
+        "gaps": [
+            "Page preview render speed depends on PDF size",
+            "Rotated or very small tags may be missed",
+        ],
+        "next": "Add thumbnail strip to browse all pages; add zoom on page preview",
+    },
+    {
+        "module":   "Point List",
+        "icon":     "📋",
+        "ready":    65,
+        "status":   "demo",
+        "what_works": [
+            "AI generates AI/AO/DI/DO per device from context",
+            "Client Excel template: AI matches your column format",
+            "Editable table — change any cell before export",
+            "Export to Excel (plain or matching client template)",
+        ],
+        "gaps": [
+            "AI reads device names, not actual SOO line by line",
+            "Point counts are estimated, not extracted from SOO",
+        ],
+        "next": "Extract SOO text per system, send to Claude for exact point list",
+    },
+    {
+        "module":   "Estimate",
+        "icon":     "💰",
+        "ready":    70,
+        "status":   "demo",
+        "what_works": [
+            "Labor: AI generates hours by phase from point count + rates",
+            "Material: 200-item Honeywell price book, qty × unit cost",
+            "Client labor rates saved per client profile",
+            "Combined total: Labor + Material with markup",
+            "Export to Excel (labor / material / combined sheets)",
+        ],
+        "gaps": [
+            "Labor hours are formula-based, not read from controls spec",
+            "Material prices are 2022 list prices",
+            "No material take-off from drawings yet",
+        ],
+        "next": "Read controls spec for inclusions/exclusions; connect price book to vendor API",
+    },
+    {
+        "module":   "Proposal",
+        "icon":     "📄",
+        "ready":    60,
+        "status":   "demo",
+        "what_works": [
+            "AI writes TEC-style proposal from scope summary",
+            "Clarifications auto-filled from amber tags",
+            "Exclusions auto-filled from red tags",
+            "Client Word template: fills {{placeholders}}",
+            "Export to .docx",
+        ],
+        "gaps": [
+            "AI writes from scope summary, not from reading your actual proposal template sections",
+            "Needs human review before sending to client",
+        ],
+        "next": "Parse Word template sections, fill each section individually with targeted AI",
+    },
+    {
+        "module":   "AI Advisor",
+        "icon":     "🤖",
+        "ready":    80,
+        "status":   "production",
+        "what_works": [
+            "Full project context in every call",
+            "Device-level Q&A: points, sequence, discrepancy resolution, labor hours",
+            "Quick actions: resolve discrepancies, review estimate, scope gap check",
+            "Session history per project",
+        ],
+        "gaps": [
+            "Context is metadata only — doesn't read uploaded PDF content",
+        ],
+        "next": "Pass extracted PDF text as context for richer, document-grounded answers",
+    },
+]
+
+PRODUCTION_GAPS = [
+    {
+        "gap":      "Persistent storage",
+        "effort":   "2-3 weeks",
+        "impact":   "HIGH",
+        "why":      "Everything lives in session state — disappears on refresh. "
+                    "Needs Supabase (Postgres) for projects, clients, estimates to persist. "
+                    "Foundation for everything else below.",
+        "status":   "Partial — Streamlit storage saves metadata. Uploaded PDFs not persisted.",
+    },
+    {
+        "gap":      "User accounts",
+        "effort":   "1 week",
+        "impact":   "HIGH",
+        "why":      "No login = no separation between users. "
+                    "Supabase auth (email or Google) solves this once storage exists.",
+        "status":   "Not started",
+    },
+    {
+        "gap":      "Multi-user / team support",
+        "effort":   "2-3 weeks",
+        "impact":   "MEDIUM",
+        "why":      "Two estimators get separate sessions with no shared data. "
+                    "Need shared project state, role-based access (estimator / reviewer / PM), "
+                    "conflict resolution when two people edit simultaneously.",
+        "status":   "Not started",
+    },
+    {
+        "gap":      "Audit trail",
+        "effort":   "1-2 weeks",
+        "impact":   "MEDIUM",
+        "why":      "No record of who changed what, when. "
+                    "Critical for bid review and dispute resolution. "
+                    "Every module change logged: user, field, old value, new value, timestamp.",
+        "status":   "Not started",
+    },
+    {
+        "gap":      "Real PDF parsing pipeline",
+        "effort":   "2-3 weeks",
+        "impact":   "HIGH",
+        "why":      "AI Takeoff currently reads doc names, not content. "
+                    "Production: extract schedule page text → Claude structured extraction; "
+                    "render floor plan pages as images → Claude Vision for symbol detection.",
+        "status":   "Partial — text search works; Claude Vision call not wired",
+    },
+    {
+        "gap":      "Price book maintenance",
+        "effort":   "1 week",
+        "impact":   "LOW",
+        "why":      "Prices change quarterly. Currently 2022 list prices hardcoded in JSON. "
+                    "Need UI to edit items, import from Excel, or connect to vendor API.",
+        "status":   "JSON structure ready — UI not built",
+    },
+    {
+        "gap":      "Mobile / field use",
+        "effort":   "2-4 weeks",
+        "impact":   "LOW",
+        "why":      "Estimators review drawings on site. "
+                    "Streamlit is desktop-first. Real mobile needs responsive layout "
+                    "or separate React frontend.",
+        "status":   "Not started",
+    },
+]
+
+
+def _product_status_panel():
+    st.markdown("### Product status & roadmap")
+    st.caption(
+        "Built for AI PM interview demo · "
+        "West 34th Street Hotel as reference project · "
+        "Honest assessment of what works, what's demo-ready, and what's next"
+    )
+
+    # ── Overall readiness bar ─────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### Overall tool readiness")
+
+    avg_ready = sum(m["ready"] for m in MODULE_READINESS) // len(MODULE_READINESS)
+    prod_count  = sum(1 for m in MODULE_READINESS if m["status"] == "production")
+    demo_count  = sum(1 for m in MODULE_READINESS if m["status"] == "demo")
+
+    oc1, oc2, oc3, oc4 = st.columns(4)
+    oc1.metric("Overall readiness",  f"{avg_ready}%")
+    oc2.metric("Production-ready modules", prod_count)
+    oc3.metric("Demo-ready modules",  demo_count)
+    oc4.metric("Roadmap items",       len(PRODUCTION_GAPS))
+
+    st.progress(avg_ready / 100,
+                text=f"{avg_ready}% ready · {prod_count} modules production-ready · {demo_count} demo-ready")
+
+    # ── Per-module readiness ──────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### Module readiness")
+
+    for mod in MODULE_READINESS:
+        status_color = (
+            "🟢" if mod["status"] == "production" else
+            "🟡" if mod["status"] == "demo" else "🔴"
+        )
+        status_label = (
+            "Production-ready" if mod["status"] == "production" else
+            "Demo-ready" if mod["status"] == "demo" else "Not ready"
+        )
+        with st.expander(
+            f"{mod['icon']} {mod['module']} — {mod['ready']}% · {status_color} {status_label}",
+            expanded=False
+        ):
+            st.progress(mod["ready"] / 100)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**✅ What works**")
+                for w in mod["what_works"]:
+                    st.markdown(f"- {w}")
+            with c2:
+                st.markdown("**⚠️ Gaps**")
+                for g in mod["gaps"]:
+                    st.markdown(f"- {g}")
+
+            st.markdown(f"**➡ Next:** {mod['next']}")
+
+    # ── Production gaps ───────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### What a production version needs")
+    st.caption("Ordered by impact. Total estimate: 3-4 months part-time.")
+
+    IMPACT_COLOR = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "⚪"}
+
+    for gap in PRODUCTION_GAPS:
+        ic = IMPACT_COLOR.get(gap["impact"], "⚪")
+        with st.expander(
+            f"{ic} {gap['gap']} — {gap['effort']} · Impact: {gap['impact']}",
+            expanded=False
+        ):
+            st.markdown(f"**Why it matters:** {gap['why']}")
+            st.markdown(f"**Current status:** {gap['status']}")
+
+    # ── Pre-interview checklist ───────────────────────────────────────────
+    st.divider()
+    st.markdown("#### 📋 Pre-interview checklist")
+
+    checks = [
+        ("Load West 34th JSON",
+         "Takeoff tab → 'Or upload schedule_ground_truth.json'. "
+         "Gives 109 real devices and 12 discrepancies. Do NOT use AI Takeoff button live."),
+        ("Run drawing markup on your 15MB set",
+         "Upload real drawing set, click Process, verify highlights look right, "
+         "generate annotated PDF once and keep ready."),
+        ("Add API key to Streamlit Secrets",
+         "Streamlit dashboard → Settings → Secrets → "
+         "ANTHROPIC_API_KEY = 'sk-ant-...'"),
+        ("Practise the 5-minute demo script",
+         "Overview → Discrepancies → Drawing Markup search → "
+         "Send to proposal → Open this panel. Out loud, 3 times."),
+        ("Have one sentence ready for every incomplete tab",
+         "'This is the roadmap item — here's what it does and why the "
+         "architecture supports it even though the AI piece isn't production-ready.'"),
+    ]
+
+    all_done = True
+    for i, (title, desc) in enumerate(checks, 1):
+        done = st.checkbox(f"**{i}. {title}**", key=f"check_{i}")
+        if not done:
+            all_done = False
+            st.caption(f"   → {desc}")
+
+    if all_done:
+        st.success("✅ All set — you're ready for the interview.")
+
+    # ── Demo script ───────────────────────────────────────────────────────
+    st.divider()
+    with st.expander("📣 5-minute demo script"):
+        st.markdown("""
+**Beat 1 — The problem** *(60 sec)*
+> *"A typical BMS estimate touches 5 documents, takes 2-3 days, and still misses things.
+The most common miss: devices in the schedule with no SOO sequence.
+Nobody writes them as excluded, nobody includes them in scope. They fall through the gap."*
+
+---
+**Beat 2 — The catch** *(90 sec)*
+
+Open **Discrepancies** tab → point to amber banner.
+
+> *"This project has 12 unit heaters in the M-200 schedule with integral thermostats
+and zero SOO sequence. The tool caught them automatically.
+Each one is a $500–700 scope question. Potentially $8,000 missed."*
+
+Open **Drawing Markup** → search `UH-SC-1`.
+
+> *"It's physically here on the drawing, it's in the schedule —
+but there's no SOO sequence. Is it in BMS scope or not?
+The tool forces that question before you submit the number."*
+
+---
+**Beat 3 — The pipeline** *(90 sec)*
+
+Click through the 5 module tabs quickly.
+
+> *"Once the takeoff is clean, the tool generates the point list in the client's
+own Excel format, estimates labor from the point count,
+builds the material list from our price book,
+and drafts the proposal in our Word template.
+The estimator reviews — AI does the first pass."*
+
+Click **Send amber tags to proposal** → show Clarifications auto-filled.
+
+---
+**Beat 4 — Honest roadmap** *(60 sec)*
+
+Open **this panel**.
+
+> *"Here's what's production-ready, what's demo-ready, and what's missing.
+Biggest gap: persistent storage — session state disappears on refresh.
+Second: multi-user. Both are 6-8 week engineering problems,
+not architecture problems — the data model already supports them."*
+
+---
+**Close**
+
+> *"The core insight — three-way cross-check of schedule, SOO, and drawings —
+is what's actually new. Everything else is workflow automation around that insight.
+The architecture is modular so each piece can become an API
+that plugs into whatever system you're already using."*
+        """)
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
