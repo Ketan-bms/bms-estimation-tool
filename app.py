@@ -406,25 +406,94 @@ def page_projects_list():
                     st.success(f"✅ '{pname}' created.")
                     st.rerun()
 
-    for pname,p in projects.items():
+    # Edit state
+    if "editing_project" not in st.session_state:
+        st.session_state.editing_project = None
+
+    for pname,p in list(projects.items()):
         disc = len(p["takeoff"].get("discrepancies",[]))
         devs = len(p["takeoff"].get("equipment",[]))
         with st.container(border=True):
-            r1,r2,r3 = st.columns([3,4,1])
-            r1.markdown(f"### {pname}")
-            r1.caption(f"{p.get('address','—')} · Client: {p.get('client','—')}")
-            r1.caption(f"Bid: {p.get('bid_date','TBD')} · {devs} devices")
-            html = ""
-            for mod in MODULE_ORDER:
-                s = module_status(p,mod)
-                lbl = (f"⚠️{disc}" if mod=="Takeoff" and disc else
-                       ("Done" if s=="done" else ("In progress" if s=="in_progress" else "—")))
-                html += chip("issues" if mod=="Takeoff" and disc else s, f"{mod}: {lbl}") + " "
-            r2.markdown(html, unsafe_allow_html=True)
-            if r3.button("Open →", key=f"op_{pname}", type="primary"):
-                st.session_state.active_project = pname
-                st.session_state.active_module  = "Takeoff"
-                st.rerun()
+
+            # ── Editing mode ──────────────────────────────────────────
+            if st.session_state.editing_project == pname:
+                st.markdown(f"**Editing: {pname}**")
+                with st.form(f"edit_proj_{pname}"):
+                    ec1,ec2 = st.columns(2)
+                    new_name    = ec1.text_input("Project name", value=pname)
+                    new_address = ec2.text_input("Address", value=p.get("address",""))
+                    ec3,ec4 = st.columns(2)
+                    client_opts = ["(no client)"] + list(st.session_state.clients.keys())
+                    cur_client  = p.get("client") or "(no client)"
+                    new_client  = ec3.selectbox("Client", client_opts,
+                                                index=client_opts.index(cur_client)
+                                                if cur_client in client_opts else 0)
+                    cur_bid = None
+                    try:
+                        from datetime import date as _date
+                        cur_bid = _date.fromisoformat(str(p.get("bid_date",""))) if p.get("bid_date") else None
+                    except Exception:
+                        pass
+                    new_bid = ec4.date_input("Bid date", value=cur_bid)
+                    sc1,sc2 = st.columns(2)
+                    if sc1.form_submit_button("Save changes", type="primary"):
+                        if new_name and new_name != pname:
+                            projects[new_name] = projects.pop(pname)
+                            pname = new_name
+                            p = projects[pname]
+                        p["address"]  = new_address
+                        p["client"]   = new_client if new_client != "(no client)" else None
+                        p["bid_date"] = str(new_bid) if new_bid else None
+                        if new_client and new_client != "(no client)":
+                            cl = st.session_state.clients.get(new_client,{})
+                            if cl.get("rates"):
+                                p["estimate"]["rates"] = dict(cl["rates"])
+                        st.session_state.editing_project = None
+                        _save_app_state()
+                        st.rerun()
+                    if sc2.form_submit_button("Cancel"):
+                        st.session_state.editing_project = None
+                        st.rerun()
+
+            # ── Normal view ───────────────────────────────────────────
+            else:
+                r1,r2,r3 = st.columns([3,4,2])
+                r1.markdown(f"### {pname}")
+                r1.caption(f"{p.get('address','—')} · Client: {p.get('client','—')}")
+                r1.caption(f"Bid: {p.get('bid_date','TBD')} · {devs} devices")
+                html = ""
+                for mod in MODULE_ORDER:
+                    s = module_status(p,mod)
+                    lbl = (f"⚠️{disc}" if mod=="Takeoff" and disc else
+                           ("Done" if s=="done" else ("In progress" if s=="in_progress" else "—")))
+                    html += chip("issues" if mod=="Takeoff" and disc else s, f"{mod}: {lbl}") + " "
+                r2.markdown(html, unsafe_allow_html=True)
+                rb1,rb2,rb3 = r3.columns(3)
+                if rb1.button("Open", key=f"op_{pname}", type="primary"):
+                    st.session_state.active_project = pname
+                    st.session_state.active_module  = "Takeoff"
+                    st.rerun()
+                if rb2.button("✏️", key=f"ed_{pname}", help="Edit project details"):
+                    st.session_state.editing_project = pname
+                    st.rerun()
+                if rb3.button("🗑", key=f"dl_{pname}", help="Delete project"):
+                    st.session_state[f"confirm_delete_{pname}"] = True
+                    st.rerun()
+
+                # Confirm delete
+                if st.session_state.get(f"confirm_delete_{pname}"):
+                    st.warning(f"Delete **{pname}**? This cannot be undone.")
+                    cc1,cc2 = st.columns(2)
+                    if cc1.button("Yes, delete", key=f"yes_del_{pname}", type="primary"):
+                        del projects[pname]
+                        st.session_state.pop(f"confirm_delete_{pname}", None)
+                        if st.session_state.active_project == pname:
+                            st.session_state.active_project = None
+                        _save_app_state()
+                        st.rerun()
+                    if cc2.button("Cancel", key=f"no_del_{pname}"):
+                        st.session_state.pop(f"confirm_delete_{pname}", None)
+                        st.rerun()
 
 def page_project_detail(p):
     bc,hc = st.columns([1,8])
