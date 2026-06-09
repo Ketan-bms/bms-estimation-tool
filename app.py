@@ -551,18 +551,50 @@ def module_takeoff(p):
             st.success("Saved."); st.rerun()
 
     st.divider()
-    col_btn,_ = st.columns([1,3])
+    col_btn, col_note = st.columns([1,3])
+    col_note.caption(
+        "AI reads your actual PDF content — extracts device tags from schedule pages, "
+        "cross-checks against SOO. Takes 15-30 seconds depending on document size."
+    )
     if col_btn.button("🤖 Run AI Takeoff", type="primary", key="run_tk"):
         k = api_key()
-        if not k: st.error("Add API key in sidebar.")
-        elif not p["docs"]: st.error("Upload at least one document first.")
+        if not k:
+            st.error("❌ No API key. Add your Anthropic API key in the sidebar (sk-ant-...).")
+        elif not p["docs"]:
+            st.error("❌ No documents uploaded. Upload Drawings and/or SOO first.")
         else:
-            with st.spinner("Claude is extracting devices from your documents..."):
+            prog = st.progress(0, text="Reading PDF content...")
+            try:
+                prog.progress(20, text="Extracting text from drawings...")
+                prog.progress(50, text="Sending to Claude — reading schedule pages and SOO...")
                 result = ai_takeoff(p, k)
-            p["takeoff"]["equipment"]     = result.get("equipment",[])
-            p["takeoff"]["discrepancies"] = result.get("discrepancies",[])
-            p["takeoff"]["status"]        = "issues" if result.get("discrepancies") else "done"
-            st.rerun()
+                prog.progress(100, text="Done.")
+
+                if result.get("error"):
+                    st.error(f"⚠️ AI returned an error: {result['error']}")
+                    st.info("Tip: Use 'Or upload schedule_ground_truth.json' for the demo instead.")
+                elif not result.get("equipment"):
+                    st.warning(
+                        "⚠️ No devices extracted. This usually means:\n"
+                        "1. The PDF text layer is not readable (scanned PDF needs OCR)\n"
+                        "2. The drawings don't contain schedule sheets\n"
+                        "3. The API call failed silently\n\n"
+                        "**For the demo: use 'Or upload schedule_ground_truth.json' below.**"
+                    )
+                else:
+                    p["takeoff"]["equipment"]     = result.get("equipment",[])
+                    p["takeoff"]["discrepancies"] = result.get("discrepancies",[])
+                    p["takeoff"]["status"]        = "issues" if result.get("discrepancies") else "done"
+                    _save_app_state()
+                    st.success(
+                        f"✅ Extracted {len(result['equipment'])} devices · "
+                        f"{len(result.get('discrepancies',[]))} discrepancies found"
+                    )
+                    st.rerun()
+            except Exception as e:
+                prog.progress(100, text="Error.")
+                st.error(f"❌ Error during takeoff: {e}")
+                st.info("Use 'Or upload schedule_ground_truth.json' below for the demo.")
 
     with st.expander("Or upload schedule_ground_truth.json"):
         gt = st.file_uploader("JSON", type=["json"], key="tk_gt")
@@ -994,27 +1026,128 @@ def _claude(k, prompt, max_tokens=1500):
     except Exception as e:
         st.error(f"Claude error: {e}"); return None
 
+def _extract_pdf_text(pdf_bytes, max_chars=12000):
+    """Extract text from PDF using PyMuPDF. Returns truncated text for Claude."""
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        pages_text = []
+        for i, page in enumerate(doc):
+            text = page.get_text().strip()
+            if text:
+                pages_text.append(f"--- PAGE {i+1} ---\n{text}")
+        full = "\n".join(pages_text)
+        # Truncate to max_chars to stay within token limits
+        if len(full) > max_chars:
+            full = full[:max_chars] + f"\n[...truncated at {max_chars} chars]"
+        return full
+    except Exception as e:
+        return f"[Could not extract text: {e}]"
+
+
+def _extract_docx_text(docx_bytes, max_chars=8000):
+    """Extract text from DOCX."""
+    try:
+        from docx import Document as D
+        doc = D(io.BytesIO(docx_bytes))
+        text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        return text[:max_chars]
+    except Exception as e:
+        return f"[Could not extract text: {e}]"
+
+
 def ai_takeoff(p, k):
-    doc_names = p.get("doc_names",{})
-    prompt = (
-        f"You are a BMS estimation expert. Extract all BMS device tags for project '{p['name']}'.\n"
-        f"Documents uploaded: {', '.join(doc_names.keys()) or 'none'}.\n\n"
-        f"Return ONLY valid JSON:\n"
-        f'{{"equipment":[{{"tag":"FCU-SC-1","qty":1,"floor":"Subcellar","system":"Fan Coil Unit",'
-        f'"classification":"Terminal / FCU","bms_interface_default":"DDC","soo_confirmed":true,'
-        f'"discrepancy_flag":false,"action":""}}],'
-        f'"discrepancies":[{{"tag":"EUH-SC-1","system":"Electric Unit Heater","floor":"Subcellar",'
-        f'"action":"Confirm BMS monitoring scope"}}]}}\n\n'
-        f"Device types to look for: FCU, AHU, DOAS, VAV, EUH, UH, ASHP, ERV, PFSP, SPF, HPF, GX, EF, PCHWP, SCHWP, PHWP, SHWP, PFHX, BT, FOP.\n"
-        f"Discrepancies = devices in schedule with no SOO sequence (EUH, UH with integral thermostats are most common).\n"
-        f"Return ONLY the JSON."
-    )
-    raw = _claude(k, prompt, 2000) or ""
+    """
+    Real AI takeoff — extracts text from uploaded PDFs and sends to Claude.
+    Reads: Drawings (schedule pages) + SOO (cross-check) + Controls spec (scope).
+    """
+    docs      = p.get("docs", {})
+    doc_names = p.get("doc_names", {})
+
+    # ── Extract text from each document ──────────────────────────────────
+    extracted = {}
+    for label in ["Drawings", "SOO", "Controls spec"]:
+        raw_bytes = docs.get(label)
+        if not raw_bytes:
+            extracted[label] = None
+            continue
+        fname = doc_names.get(label, "")
+        if fname.lower().endswith(".docx"):
+            extracted[label] = _extract_docx_text(raw_bytes)
+        else:
+            # PDF — drawings get more characters, SOO gets medium
+            max_c = 14000 if label == "Drawings" else 8000
+            extracted[label] = _extract_pdf_text(raw_bytes, max_chars=max_c)
+
+    # ── Build prompt with real content ────────────────────────────────────
+    drawings_text = extracted.get("Drawings") or "Not provided"
+    soo_text      = extracted.get("SOO")      or "Not provided"
+    spec_text     = extracted.get("Controls spec") or "Not provided"
+
+    prompt = f"""You are a senior BMS estimation expert reviewing mechanical drawings for project '{p['name']}'.
+
+DRAWINGS TEXT (schedule sheets and floor plans):
+{drawings_text}
+
+SEQUENCE OF OPERATIONS (SOO):
+{soo_text}
+
+CONTROLS SPECIFICATION:
+{spec_text[:4000] if spec_text != "Not provided" else "Not provided"}
+
+TASK:
+1. Extract ALL unique BMS device tags from the drawings text above.
+2. For each tag, check if it appears in the SOO text. If it has no SOO sequence, flag as discrepancy.
+3. Common discrepancies: EUH (electric unit heaters) and UH (hot water unit heaters) with integral/wall thermostats — these appear in schedules but rarely have SOO sequences.
+
+Return ONLY valid JSON in this exact format:
+{{
+  "equipment": [
+    {{
+      "tag": "FCU-SC-1",
+      "qty": 1,
+      "floor": "Subcellar",
+      "system": "Fan Coil Unit",
+      "classification": "Terminal / FCU",
+      "bms_interface_default": "DDC",
+      "soo_confirmed": true,
+      "discrepancy_flag": false,
+      "action": ""
+    }}
+  ],
+  "discrepancies": [
+    {{
+      "tag": "EUH-SC-1",
+      "system": "Electric Unit Heater",
+      "floor": "Subcellar",
+      "action": "Integral thermostat — confirm whether BMS monitoring point is required"
+    }}
+  ]
+}}
+
+Device types to extract: FCU, AHU, DOAS, MUA, VAV, EUH, UH, ASHP, ERV, PFSP, SPF, HPF, GX, EF, HF, TF, PCHWP, SCHWP, PHWP, SHWP, FPP, PFHX, BT, GFU, FOP, ESP, FTR, HWC, ACU, AC-C.
+
+Floor mapping from tag suffix: SC=Subcellar, C=Cellar, 1M=1st/Mezzanine, 12=12th Floor, 33=33rd Floor, 34=34th Floor, 35=35th Floor, 36=36th Floor, ROOF=Roof.
+
+Return ONLY the JSON, no other text."""
+
+    raw = _claude(k, prompt, 4000) or ""
+
     try:
         clean = raw.strip()
-        if "```" in clean: clean = clean.split("```")[1]; clean = clean[4:] if clean.startswith("json") else clean
+        if "```" in clean:
+            parts = clean.split("```")
+            clean = parts[1] if len(parts) > 1 else clean
+            if clean.startswith("json"):
+                clean = clean[4:]
         return json.loads(clean.strip())
-    except: return {"equipment":[],"discrepancies":[],"error":raw[:200]}
+    except Exception:
+        # If JSON parse fails, return error with raw output for debugging
+        return {
+            "equipment": [],
+            "discrepancies": [],
+            "error": f"JSON parse failed. Raw output: {raw[:500]}"
+        }
 
 def ai_point_list(p, k, pl_tmpl, pl_name):
     col_desc = "Standard columns: System/Device, Tag, Description, Qty, AI, AO, DI, DO, HWI, Network, Notes"
