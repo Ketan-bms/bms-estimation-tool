@@ -35,69 +35,74 @@ PHASES = list(DEFAULT_RATES.keys())
 MODULE_ORDER = ["Takeoff","Point List","Estimate","Proposal"]
 
 # ── State ─────────────────────────────────────────────────────────────────────
-# ── Persistent storage helpers ───────────────────────────────────────────────
+# ── Persistent storage using st.cache_resource ────────────────────────────────
+# Survives browser refresh for the lifetime of the Streamlit server process.
+# Clients (including template bytes) and project metadata are stored here.
+# Uploaded PDFs are NOT stored (too large) — must re-upload after server restart.
 
-def _storage_save(key, value):
-    """Save to Streamlit persistent storage. Falls back silently if unavailable."""
-    try:
-        import json
-        storage = st.connection("storage", type="st.connections.StorageConnection")             if hasattr(st, "connection") else None
-        if storage:
-            storage.put(key, json.dumps(value, default=str))
-            return True
-    except Exception:
-        pass
-    # Fallback: use window.storage via components if available
-    try:
-        import streamlit.components.v1 as components
-        import json
-        js = f"""
-        <script>
-        try {{
-            window.parent.localStorage.setItem({json.dumps(key)}, {json.dumps(json.dumps(value, default=str))});
-        }} catch(e) {{}}
-        </script>
-        """
-        components.html(js, height=0)
-    except Exception:
-        pass
-    return False
-
-
-def _storage_load(key, default=None):
-    """Load from persistent storage."""
-    try:
-        storage = st.connection("storage", type="st.connections.StorageConnection")             if hasattr(st, "connection") else None
-        if storage:
-            import json
-            raw = storage.get(key)
-            if raw:
-                return json.loads(raw)
-    except Exception:
-        pass
-    return default
+@st.cache_resource
+def _get_store():
+    """One shared dict that persists across reruns and refreshes."""
+    return {
+        "clients":   {},   # client metadata (rates, template names)
+        "projects":  {},   # project metadata (no doc bytes)
+        "templates": {},   # client template bytes keyed by "{client}_pl" / "{client}_prop"
+    }
 
 
 def _save_app_state():
-    """Persist clients and projects to storage."""
-    import json
+    """Write current session state into the persistent store."""
+    store = _get_store()
     try:
-        # Save clients (without binary template bytes — too large)
-        clients_serializable = {}
+        # ── Clients ───────────────────────────────────────────────────────
+        clients_meta = {}
         for cname, c in st.session_state.get("clients", {}).items():
-            clients_serializable[cname] = {
-                k: v for k, v in c.items()
-                if k not in ("pl_template_bytes", "prop_template_bytes")
-            }
-        # Save projects (without doc bytes — too large for storage)
-        projects_serializable = {}
+            meta = {k: v for k, v in c.items()
+                    if k not in ("pl_template_bytes", "prop_template_bytes")}
+            # Store template bytes separately
+            if c.get("pl_template_bytes"):
+                store["templates"][f"{cname}_pl"]   = c["pl_template_bytes"]
+            if c.get("prop_template_bytes"):
+                store["templates"][f"{cname}_prop"] = c["prop_template_bytes"]
+            clients_meta[cname] = meta
+        store["clients"] = clients_meta
+
+        # ── Projects (no doc bytes) ───────────────────────────────────────
+        projects_meta = {}
         for pname, p in st.session_state.get("projects", {}).items():
-            projects_serializable[pname] = {
-                k: v for k, v in p.items()
-                if k not in ("docs",)
+            projects_meta[pname] = {
+                k: v for k, v in p.items() if k not in ("docs",)
             }
-        _storage_save("bms_clients",  clients_serializable)
-        _storage_save("bms_projects", projects_serializable)
+            projects_meta[pname].setdefault("docs", {})
+            projects_meta[pname]["doc_names"] = p.get("doc_names", {})
+        store["projects"] = projects_meta
+
+    except Exception:
+        pass
+
+
+def _load_app_state():
+    """Read from persistent store into session state (only if not already loaded)."""
+    store = _get_store()
+    try:
+        # ── Clients ───────────────────────────────────────────────────────
+        for cname, meta in store.get("clients", {}).items():
+            if cname not in st.session_state["clients"]:
+                entry = dict(meta)
+                pl_b   = store["templates"].get(f"{cname}_pl")
+                prop_b = store["templates"].get(f"{cname}_prop")
+                if pl_b:   entry["pl_template_bytes"]   = pl_b
+                if prop_b: entry["prop_template_bytes"] = prop_b
+                st.session_state["clients"][cname] = entry
+
+        # ── Projects ──────────────────────────────────────────────────────
+        for pname, meta in store.get("projects", {}).items():
+            if pname not in st.session_state["projects"]:
+                entry = dict(meta)
+                entry.setdefault("docs", {})
+                entry.setdefault("doc_names", {})
+                st.session_state["projects"][pname] = entry
+
     except Exception:
         pass
 
@@ -113,7 +118,7 @@ def init():
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # Load persisted data on first run
+    # Load persisted data on first run (from cache_resource store)
     if not st.session_state.get("storage_loaded"):
         _load_app_state()
         st.session_state["storage_loaded"] = True
