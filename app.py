@@ -607,49 +607,47 @@ def module_takeoff(p):
     st.divider()
 
     # ── Load takeoff data ─────────────────────────────────────────────────
-    st.markdown("**Extract takeoff data**")
-    tk_tab1, tk_tab2 = st.tabs(["📐 Read from drawings (recommended)", "📂 Upload JSON"])
+    st.markdown("**Extract device tags from drawings**")
+    st.caption(
+        "Searches the drawing PDF text layer for BMS device tags. "
+        "No API key needed — works entirely offline using PyMuPDF. "
+        "Cross-checks against SOO automatically."
+    )
 
-    with tk_tab1:
-        st.caption(
-            "Reads your uploaded drawing PDF directly — no API key needed. "
-            "Uses text layer search to find every device tag, then cross-checks "
-            "against the project SOO. Takes 5–15 seconds."
-        )
-        if not p["docs"].get("Drawings"):
-            st.warning("Upload drawings using 'Add / replace documents' above first.")
-        else:
-            fname = p["doc_names"].get("Drawings","")
-            st.info(f"📐 Ready to read: `{fname}`")
-            if st.button("🔍 Extract takeoff from drawings", type="primary", key="run_tk"):
-                prog = st.progress(0, text="Opening PDF...")
-                try:
-                    prog.progress(15, text="Reading text layer...")
-                    pdf_bytes = p["docs"]["Drawings"]
-                    prog.progress(40, text="Scanning for device tags...")
-                    result = run_pdf_takeoff(pdf_bytes)
-                    prog.progress(80, text="Cross-checking against SOO...")
-                    takeoff = takeoff_to_session_format(result)
-                    prog.progress(100, text="Done.")
+    if not p["docs"].get("Drawings"):
+        st.warning("⚠️ Upload drawings using **Add / replace documents** above first.")
+    else:
+        fname = p["doc_names"].get("Drawings", "")
+        fsize = round(len(p["docs"]["Drawings"]) / 1024 / 1024, 1)
+        c1, c2 = st.columns([2, 1])
+        c1.info(f"📐 `{fname}` · {fsize} MB ready")
+        if c2.button("🔍 Run takeoff", type="primary", key="run_tk"):
+            prog = st.progress(0, text="Opening PDF...")
+            try:
+                prog.progress(15, text="Reading text layer — scanning every page...")
+                pdf_bytes = p["docs"]["Drawings"]
+                prog.progress(40, text="Finding device tags (FCU, AHU, DOAS, EUH, UH...)...")
+                result = run_pdf_takeoff(pdf_bytes)
+                prog.progress(85, text="Cross-checking against SOO...")
+                takeoff = takeoff_to_session_format(result)
+                prog.progress(100, text="Done.")
+                p["takeoff"].update(takeoff)
+                _save_app_state()
+                stats = result["stats"]
+                st.success(
+                    f"✅ {stats['total_pages']} pages read · "
+                    f"{stats['schedule_pages']} schedule pages · "
+                    f"**{stats['total_tags']} devices found** · "
+                    f"**{stats['discrepancies']} discrepancies**"
+                )
+                st.rerun()
+            except Exception as e:
+                prog.progress(100, text="Error.")
+                st.error(f"Error reading PDF: {e}")
 
-                    p["takeoff"].update(takeoff)
-                    _save_app_state()
-
-                    stats = result["stats"]
-                    st.success(
-                        f"✅ Read {stats['total_pages']} pages · "
-                        f"{stats['schedule_pages']} schedule pages · "
-                        f"{stats['total_tags']} devices found · "
-                        f"{stats['discrepancies']} discrepancies"
-                    )
-                    st.rerun()
-                except Exception as e:
-                    prog.progress(100, text="Error.")
-                    st.error(f"Error reading PDF: {e}")
-                    st.info("If this keeps failing, use the 'Upload JSON' tab instead.")
-
-    with tk_tab2:
-        st.caption("Upload a pre-processed schedule_ground_truth.json file.")
+    st.divider()
+    with st.expander("Or load from JSON (pre-processed data)"):
+        st.caption("Upload schedule_ground_truth.json if you have pre-processed data.")
         gt = st.file_uploader("schedule_ground_truth.json", type=["json"], key="tk_gt")
         if gt:
             if st.button("Load JSON", key="tk_load", type="primary"):
@@ -659,16 +657,13 @@ def module_takeoff(p):
                 p["takeoff"]["discrepancies"] = [e for e in equip if e.get("discrepancy_flag")]
                 p["takeoff"]["status"]        = "issues" if p["takeoff"]["discrepancies"] else "done"
                 _save_app_state()
-                st.success(
-                    f"✅ Loaded {len(equip)} devices · "
-                    f"{len(p['takeoff']['discrepancies'])} discrepancies"
-                )
+                st.success(f"✅ {len(equip)} devices · {len(p['takeoff']['discrepancies'])} discrepancies")
                 st.rerun()
 
     equip = p["takeoff"].get("equipment",[])
     discs = p["takeoff"].get("discrepancies",[])
     if not equip:
-        st.info("No takeoff data. Run AI Takeoff or upload JSON.")
+        st.info("No takeoff data. Upload drawings and click **Run takeoff** above.")
         return
 
     m1,m2,m3,m4 = st.columns(4)
