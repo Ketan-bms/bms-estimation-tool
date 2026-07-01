@@ -113,25 +113,9 @@ def init():
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # Load persisted data on first run from query params
+    # Load persisted data on first run
     if not st.session_state.get("storage_loaded"):
-        try:
-            import base64, zlib, json as _json
-            compressed = st.query_params.get("d", "")
-            if compressed:
-                payload = _json.loads(zlib.decompress(base64.urlsafe_b64decode(compressed)).decode())
-                saved_clients  = payload.get("clients", {})
-                saved_projects = payload.get("projects", {})
-                for k,v in saved_clients.items():
-                    if k not in st.session_state["clients"]:
-                        st.session_state["clients"][k] = v
-                for k,v in saved_projects.items():
-                    if k not in st.session_state["projects"]:
-                        v.setdefault("docs", {})
-                        v.setdefault("doc_names", {})
-                        st.session_state["projects"][k] = v
-        except Exception:
-            pass
+        _load_app_state()
         st.session_state["storage_loaded"] = True
 
 def new_project(name, client, bid_date, address):
