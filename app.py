@@ -1203,53 +1203,101 @@ Return ONLY the JSON, no other text."""
         }
 
 def ai_point_list(p, k, pl_tmpl, pl_name):
-    col_desc = "Standard columns: System/Device, Tag, Description, Qty, AI, AO, DI, DO, HWI, Network, Notes"
+    """Generate BMS point list from SOO. Works with or without takeoff."""
+
+    # ── Column format ─────────────────────────────────────────────────────
+    columns = ["System/Device","Tag","Description","Qty","AI","AO","DI","DO","HWI","Network","Notes"]
     if pl_tmpl:
         try:
-            df = pd.read_excel(io.BytesIO(pl_tmpl), nrows=2)
-            col_desc = f"Match these client template columns exactly: {', '.join(str(c) for c in df.columns)}"
-        except: pass
+            df_t = pd.read_excel(io.BytesIO(pl_tmpl), nrows=3)
+            cols = [str(c) for c in df_t.columns if not str(c).startswith("Unnamed")]
+            if cols: columns = cols
+        except Exception:
+            pass
+    col_str = ", ".join(f'"{c}"' for c in columns)
 
-    # Use takeoff devices if available, otherwise use SOO-based system list
-    equip = p["takeoff"].get("equipment", [])[:30]
-    has_takeoff = len(equip) > 0
-
-    # Extract SOO text if available
-    soo_text = ""
+    # ── Extract SOO text ──────────────────────────────────────────────────
+    soo_text, spec_text = "", ""
     if p["docs"].get("SOO"):
-        soo_text = _extract_pdf_text(p["docs"]["SOO"], max_chars=8000)
-    spec_text = ""
+        fname = p["doc_names"].get("SOO","")
+        soo_text = (_extract_docx_text(p["docs"]["SOO"], 10000)
+                    if fname.lower().endswith(".docx")
+                    else _extract_pdf_text(p["docs"]["SOO"], 10000))
     if p["docs"].get("Controls spec"):
-        spec_text = _extract_pdf_text(p["docs"]["Controls spec"], max_chars=4000)
+        spec_text = _extract_pdf_text(p["docs"]["Controls spec"], 4000)
 
-    if has_takeoff:
-        device_context = f"Devices from takeoff (sample): {json.dumps(equip)}"
+    # ── Device summary ────────────────────────────────────────────────────
+    equip = p["takeoff"].get("equipment", [])
+    if equip:
+        from collections import Counter as _C
+        sc = _C(e.get("system","Unknown") for e in equip)
+        dev_note = "Devices in takeoff: " + "; ".join(f"{v}x {k}" for k,v in sc.most_common(20))
     else:
-        device_context = (
-            "No takeoff loaded. Generate point list based on systems found in the SOO. "
-            "Use generic system names as the System/Device column (e.g. 'Fan Coil Unit', "
-            "'DOAS Unit', 'Hot Water Pump') rather than specific tags."
-        )
+        dev_note = "No takeoff yet — identify all systems from the SOO and generate points for each."
 
-    prompt = (
-        f"Generate a BMS point list for project '{p['name']}'.\n"
-        f"{col_desc}\n\n"
-        f"{device_context}\n\n"
-        f"SOO content:\n{soo_text[:6000] if soo_text else 'Not provided'}\n\n"
-        f"Controls spec:\n{spec_text[:3000] if spec_text else 'Not provided'}\n\n"
-        f"For each system/device, list ALL required BMS monitoring and control points. "
-        f"Use '1' for point present, '' for N/A. "
-        f"Base point types on the SOO sequences above.\n"
-        f'Example row: {{"System/Device":"FCU-SC-1","Tag":"Fan Enable","Description":"Fan start/stop command","Qty":1,"AI":"","AO":"","DI":"","DO":"1","HWI":"","Network":"","Notes":""}}\n'
-        f"Return ONLY a JSON array, no other text."
-    )
-    raw = _claude(k, prompt, 3000) or ""
+    # ── Example row using actual columns ─────────────────────────────────
+    ex = {}
+    for c in columns:
+        if c in ("System/Device",): ex[c] = "DOAS-1M-1"
+        elif c in ("Tag",):         ex[c] = "Supply Fan Start/Stop"
+        elif c in ("Description",): ex[c] = "Supply fan enable command"
+        elif c in ("Qty",):         ex[c] = 1
+        elif c in ("DO","AO"):      ex[c] = "1"
+        else:                       ex[c] = ""
+
+    prompt = f"""You are a senior BMS controls engineer. Generate a point list for project '{p["name"]}'.
+
+{dev_note}
+
+SEQUENCE OF OPERATIONS — read every section and extract ALL I/O points listed:
+{soo_text[:8000] if soo_text else "Not provided."}
+
+CONTROLS SPEC:
+{spec_text[:2000] if spec_text else "Not provided."}
+
+OUTPUT RULES:
+- Return a JSON array of objects, one row per BMS point
+- Use EXACTLY these column names: {col_str}
+- Use "1" for present, "" for not applicable
+- Cover every system that has an I/O table in the SOO above (ASHP, HWP, CHWP, DOAS, MAU, AHU, ERV, FCU, VAV, ACU, HWC, FTR, GX, EF, ESP, GFU)
+- Each system needs 5-20 rows for its individual points (fan SS, fan status, fan fault, valve, sensors, alarms)
+- Do NOT summarise — one row per point
+
+CRITICAL: Start your response with [ and end with ]. No markdown, no explanation, no code fences.
+
+Example: {json.dumps([ex])}"""
+
+    raw = _claude(k, prompt, max_tokens=4000) or ""
+
+    # ── Robust JSON extraction ────────────────────────────────────────────
+    def parse(text):
+        text = text.strip()
+        # Strip markdown fences
+        if "```" in text:
+            for part in text.split("```"):
+                part = part.strip().lstrip("json").strip()
+                if part.startswith("["): text = part; break
+        # Trim to array bounds
+        s, e = text.find("["), text.rfind("]")
+        if s != -1 and e > s:
+            return json.loads(text[s:e+1])
+        raise ValueError("No array found")
+
     try:
-        clean = raw.strip()
-        if "```" in clean: clean = clean.split("```")[1]; clean = clean[4:] if clean.startswith("json") else clean
-        return json.loads(clean.strip())
-    except:
-        return [{"System/Device":"Parse error","Tag":raw[:80],"Description":"","Qty":"","AI":"","AO":"","DI":"","DO":"","HWI":"","Network":"","Notes":""}]
+        rows = parse(raw)
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("Empty")
+        # Ensure all columns present
+        for row in rows:
+            for col in columns:
+                row.setdefault(col, "")
+        return rows
+    except Exception as exc:
+        return [{c: ("Parse failed — check API key is valid in Streamlit Secrets"
+                     if c == "System/Device"
+                     else f"Error: {exc}" if c == "Tag"
+                     else raw[:100] if c == "Description"
+                     else "") for c in columns}]
 
 def ai_estimate(p, k, rates, markup):
     pts  = len(p["point_list"].get("rows", []))
