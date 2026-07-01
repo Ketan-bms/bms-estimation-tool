@@ -728,16 +728,60 @@ def module_point_list(p):
     if not has_soo and not has_spec:
         st.warning("⚠️ Upload SOO or Controls spec in the Takeoff tab for best results.")
 
+    # ── Diagnostics ───────────────────────────────────────────────────────
+    with st.expander("🔍 Diagnostics — click to check if SOO is loaded"):
+        soo_bytes  = p["docs"].get("SOO")
+        spec_bytes = p["docs"].get("Controls spec")
+        k_check    = api_key()
+        st.write({
+            "SOO uploaded":          bool(soo_bytes),
+            "SOO size (KB)":         round(len(soo_bytes)/1024, 1) if soo_bytes else 0,
+            "Controls spec uploaded": bool(spec_bytes),
+            "API key set":           bool(k_check),
+            "API key prefix":        k_check[:12] + "..." if k_check else "none",
+            "Takeoff devices":       len(p["takeoff"].get("equipment",[])),
+            "Client":                p.get("client","none"),
+        })
+        if soo_bytes:
+            # Try extracting first 200 chars
+            try:
+                import fitz
+                doc = fitz.open(stream=soo_bytes, filetype="pdf")
+                preview = doc[0].get_text()[:300].strip()
+                st.markdown(f"**SOO text preview (page 1):**")
+                st.code(preview)
+            except Exception as e:
+                st.error(f"Could not read SOO: {e}")
+
     if st.button("🤖 Generate point list", type="primary", key="gen_pl"):
         k = api_key()
         if not k:
-            st.error("Add API key in sidebar.")
+            st.error("❌ No API key. Add it in Streamlit dashboard → Settings → Secrets: ANTHROPIC_API_KEY = \"sk-ant-...\"")
+        elif not p["docs"].get("SOO") and not p["docs"].get("Controls spec"):
+            st.error("❌ No SOO or controls spec found in this project. "
+                     "Go to the Takeoff tab → Add/replace documents → upload your SOO PDF.")
         else:
-            with st.spinner("Claude is reading SOO and controls spec to generate point list..."):
+            prog = st.progress(0, text="Reading SOO...")
+            try:
+                prog.progress(20, text="Extracting text from SOO...")
+                # Test extraction first
+                soo_b = p["docs"].get("SOO")
+                if soo_b:
+                    import fitz as _fitz
+                    _doc = _fitz.open(stream=soo_b, filetype="pdf")
+                    _preview = " ".join(page.get_text() for page in _doc)[:200]
+                    prog.progress(40, text=f"SOO text found ({len(_preview)} chars preview)...")
+                prog.progress(60, text="Sending to Claude...")
                 rows = ai_point_list(p, k, pl_tmpl, pl_name)
-            p["point_list"]["rows"]   = rows
-            p["point_list"]["status"] = "done"
-            st.success(f"✅ {len(rows)} points generated."); st.rerun()
+                prog.progress(100, text="Done.")
+                p["point_list"]["rows"]   = rows
+                p["point_list"]["status"] = "done"
+                _save_app_state()
+                st.success(f"✅ {len(rows)} points generated.")
+                st.rerun()
+            except Exception as e:
+                prog.progress(100, text="Error.")
+                st.error(f"Error: {e}")
 
     rows = p["point_list"].get("rows",[])
     if not rows:
@@ -935,32 +979,60 @@ def _export_combined_excel(p, labor_lines, mat_items, labor_sub, labor_mk,
 # ── Module 4: Proposal ────────────────────────────────────────────────────────
 def module_proposal(p):
     st.markdown("### Proposal")
-    client   = p.get("client")
-    cl       = st.session_state.clients.get(client,{}) if client else {}
+    client    = p.get("client")
+    cl        = st.session_state.clients.get(client,{}) if client else {}
     prop_tmpl = cl.get("prop_template_bytes")
     prop_name = cl.get("prop_template_name","")
 
     if prop_tmpl:
-        st.success(f"✅ Client template loaded: `{prop_name}` — AI will fill your Word template sections.")
-        st.caption("Use {{PROJECT_NAME}}, {{CLIENT}}, {{DATE}}, {{SCOPE_TEXT}} as placeholders in your Word template.")
+        st.success(f"✅ Client template: `{prop_name}` — placeholders: {{{{PROJECT_NAME}}}}, {{{{CLIENT}}}}, {{{{DATE}}}}, {{{{SCOPE_TEXT}}}}")
     else:
-        st.info("No proposal template. AI generates a standard TEC-style proposal. Add template in Clients tab.")
+        st.info("No proposal template — AI writes a standard TEC-style proposal. Add your Word template in the Clients tab.")
+
+    # Show what data is available
+    has_takeoff  = len(p["takeoff"].get("equipment",[])) > 0
+    has_estimate = len(p["estimate"].get("lines",[])) > 0
+    has_soo      = bool(p["docs"].get("SOO"))
+    has_pl       = len(p["point_list"].get("rows",[])) > 0
+
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Devices",    len(p["takeoff"].get("equipment",[])))
+    c2.metric("Points",     len(p["point_list"].get("rows",[])))
+    c3.metric("Est. lines", len(p["estimate"].get("lines",[])))
+    c4.metric("SOO",        "✅" if has_soo else "—")
+
+    if not has_takeoff and not has_soo:
+        st.warning("⚠️ Upload SOO or complete takeoff for a meaningful proposal.")
 
     if st.button("🤖 Generate proposal", type="primary", key="gen_prop"):
         k = api_key()
-        if not k: st.error("Add API key in sidebar.")
+        if not k:
+            st.error("❌ No API key. Add ANTHROPIC_API_KEY in Streamlit Secrets.")
         else:
-            with st.spinner("Claude is writing your proposal..."):
+            prog = st.progress(0, text="Building scope from project data...")
+            try:
+                prog.progress(30, text="Sending to Claude...")
                 text = ai_proposal(p, k)
-            p["proposal"]["text"]   = text
-            p["proposal"]["status"] = "done"
-            st.rerun()
+                prog.progress(100, text="Done.")
+                if not text:
+                    st.error("Claude returned empty response. Check your API key in Streamlit Secrets.")
+                else:
+                    p["proposal"]["text"]   = text
+                    p["proposal"]["status"] = "done"
+                    _save_app_state()
+                    st.success("✅ Proposal generated.")
+                    st.rerun()
+            except Exception as e:
+                prog.progress(100, text="Error.")
+                st.error(f"Error: {e}")
 
     text = p["proposal"].get("text","")
     if not text:
-        st.info("No proposal yet. Click Generate."); return
+        st.info("No proposal yet. Click Generate above.")
+        return
 
-    edited = st.text_area("Proposal text (editable)", value=text, height=520, key="prop_ed")
+    edited = st.text_area("Proposal text — edit before exporting", value=text,
+                          height=520, key="prop_ed")
     p["proposal"]["text"] = edited
 
     if st.button("⬇ Export to Word (.docx)", key="exp_prop"):
@@ -1072,12 +1144,26 @@ def _device_prompt(tag, rec, qtype, extra, proj):
 def _claude(k, prompt, max_tokens=1500):
     try:
         import anthropic
-        msg = anthropic.Anthropic(api_key=k).messages.create(
-            model="claude-sonnet-4-6", max_tokens=max_tokens,
-            messages=[{"role":"user","content":prompt}])
+        client = anthropic.Anthropic(api_key=k)
+        msg = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=max_tokens,
+            messages=[{"role":"user","content":prompt}]
+        )
         return msg.content[0].text
     except Exception as e:
-        st.error(f"Claude error: {e}"); return None
+        err = str(e)
+        if "401" in err or "authentication" in err.lower() or "invalid" in err.lower():
+            st.error(
+                "❌ **Invalid API key.** Go to [Streamlit Cloud dashboard]"
+                "(https://share.streamlit.io) → your app → ⋮ → Settings → Secrets "
+                "and add:\n```\nANTHROPIC_API_KEY = \"sk-ant-your-key-here\"\n```"
+            )
+        elif "429" in err:
+            st.error("❌ Rate limit hit. Wait 30 seconds and try again.")
+        else:
+            st.error(f"❌ Claude error: {err}")
+        return None
 
 def _extract_pdf_text(pdf_bytes, max_chars=12000):
     """Extract text from PDF using PyMuPDF. Returns truncated text for Claude."""
@@ -1387,7 +1473,10 @@ def ai_proposal(p, k):
         f"4) Pricing 5) Notes & exclusions 6) Closing.\n"
         f"Use 'We will provide...' language. TEC Building Systems proposal style.\nReturn full proposal text."
     )
-    return _claude(k, prompt, 3000)
+    result = _claude(k, prompt, max_tokens=3000)
+    if not result:
+        return "[Error: Claude returned empty response. Check your API key in Streamlit Secrets.]"
+    return result
 
 # ── Export ────────────────────────────────────────────────────────────────────
 def export_pl_excel(df, tmpl_bytes=None):
