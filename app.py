@@ -319,9 +319,9 @@ def page_overview():
         if not any_alert:
             st.success("All clear — no blocking issues")
 
-    # ── Product status panel (collapsible — for interview use) ────────────────
+    # ── Product status panel ─────────────────────────────────────────────────
     st.divider()
-    with st.expander("🗺 Product status & roadmap — click to expand during interview"):
+    with st.expander("🗺 Product status & roadmap"):
         _product_status_panel()
 
 # ── Clients ───────────────────────────────────────────────────────────────────
@@ -1425,7 +1425,7 @@ MODULE_READINESS = [
             "West 34th Hotel: 109 devices, 12 discrepancies confirmed",
         ],
         "gaps": [
-            "AI Takeoff button reads doc names, not PDF content (use JSON upload for demo)",
+            "AI Takeoff button reads doc names, not PDF content — use PDF extraction instead",
         ],
         "next": "Wire Claude Vision to read floor plan images for scanned PDFs",
     },
@@ -1587,9 +1587,8 @@ PRODUCTION_GAPS = [
 def _product_status_panel():
     st.markdown("### Product status & roadmap")
     st.caption(
-        "Built for AI PM interview demo · "
         "West 34th Street Hotel as reference project · "
-        "Honest assessment of what works, what's demo-ready, and what's next"
+        "Honest assessment of what's working, what's in progress, and what's next"
     )
 
     # ── Overall readiness bar ─────────────────────────────────────────────
@@ -1656,9 +1655,9 @@ def _product_status_panel():
             st.markdown(f"**Why it matters:** {gap['why']}")
             st.markdown(f"**Current status:** {gap['status']}")
 
-    # ── Pre-interview checklist ───────────────────────────────────────────
+    # ── Setup checklist ──────────────────────────────────────────────────
     st.divider()
-    st.markdown("#### 📋 Pre-interview checklist")
+    st.markdown("#### 📋 Setup checklist")
 
     checks = [
         ("Load West 34th JSON",
@@ -1670,12 +1669,11 @@ def _product_status_panel():
         ("Add API key to Streamlit Secrets",
          "Streamlit dashboard → Settings → Secrets → "
          "ANTHROPIC_API_KEY = 'sk-ant-...'"),
-        ("Practise the 5-minute demo script",
+        ("Practise the product walkthrough",
          "Overview → Discrepancies → Drawing Markup search → "
          "Send to proposal → Open this panel. Out loud, 3 times."),
-        ("Have one sentence ready for every incomplete tab",
-         "'This is the roadmap item — here's what it does and why the "
-         "architecture supports it even though the AI piece isn't production-ready.'"),
+        ("Know the roadmap for every incomplete tab",
+         "Each tab that shows partial output has a clear next step in the roadmap panel."),
     ]
 
     all_done = True
@@ -1686,11 +1684,11 @@ def _product_status_panel():
             st.caption(f"   → {desc}")
 
     if all_done:
-        st.success("✅ All set — you're ready for the interview.")
+        st.success("✅ All set — ready to go.")
 
-    # ── Demo script ───────────────────────────────────────────────────────
+    # ── Walkthrough script ────────────────────────────────────────────────
     st.divider()
-    with st.expander("📣 5-minute demo script"):
+    with st.expander("📣 Product walkthrough script"):
         st.markdown("""
 **Beat 1 — The problem** *(60 sec)*
 > *"A typical BMS estimate touches 5 documents, takes 2-3 days, and still misses things.
