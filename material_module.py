@@ -178,16 +178,18 @@ def module_material(p):
         for item in filtered:
             by_sub[f"{item['section']} › {item['subsection']}"].append(item)
 
-        for group_name, items in list(by_sub.items())[:20]:  # limit display
+        for g_idx, (group_name, items) in enumerate(list(by_sub.items())[:20]):
             with st.expander(group_name, expanded=len(by_sub) <= 3):
-                for item in items:
+                for i_idx, item in enumerate(items):
+                    # Use group + item index for guaranteed unique keys
+                    ukey = f"{g_idx}_{i_idx}"
                     ic1, ic2, ic3, ic4 = st.columns([3, 1.2, 0.8, 0.8])
                     ic1.markdown(f"**{item['description']}**")
                     ic1.caption(f"`{item.get('part_no','')}` · {item.get('manufacturer','')}")
                     ic2.markdown(f"${item['unit_cost']:,.2f}")
                     qty = ic3.number_input("Qty", 0, 9999, 0,
-                                           key=f"mat_qty_{item['part_no']}_{item['description'][:20]}")
-                    if ic4.button("Add →", key=f"mat_add_{item['part_no']}_{item['description'][:15]}"):
+                                           key=f"mat_qty_{ukey}")
+                    if ic4.button("Add →", key=f"mat_add_{ukey}"):
                         if qty > 0:
                             _add_item(mat, item, qty)
                             st.rerun()
@@ -219,7 +221,7 @@ def module_material(p):
                     q1, q2, q3 = st.columns([1, 1, 1])
                     new_qty = q1.number_input("Qty", 0, 9999,
                                                int(item.get("qty", 0)),
-                                               key=f"sel_qty_{i}_{item.get('part_no','')}",
+                                               key=f"sel_qty_{i}_{item.get('part_no','')}_{item.get('description','')[:10]}",
                                                label_visibility="collapsed")
                     item["qty"] = new_qty
                     item["ext_cost"] = new_qty * item.get("unit_cost", 0)
