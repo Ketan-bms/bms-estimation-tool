@@ -7,6 +7,7 @@ Run: streamlit run app.py
 import json, os, io, base64
 from material_module import module_material, init_pricebooks
 from markup_ui import module_markup
+from pdf_takeoff import run_pdf_takeoff, takeoff_to_session_format
 from pathlib import Path
 from datetime import date
 from collections import defaultdict
@@ -112,22 +113,25 @@ def init():
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # Load persisted data on first run
+    # Load persisted data on first run from query params
     if not st.session_state.get("storage_loaded"):
-        saved_clients  = _storage_load("bms_clients",  {})
-        saved_projects = _storage_load("bms_projects", {})
-        if saved_clients:
-            # Merge — don't overwrite if session already has data
-            for k,v in saved_clients.items():
-                if k not in st.session_state["clients"]:
-                    st.session_state["clients"][k] = v
-        if saved_projects:
-            for k,v in saved_projects.items():
-                if k not in st.session_state["projects"]:
-                    # Re-attach empty docs dict (bytes not persisted)
-                    v.setdefault("docs", {})
-                    v.setdefault("doc_names", {})
-                    st.session_state["projects"][k] = v
+        try:
+            import base64, zlib, json as _json
+            compressed = st.query_params.get("d", "")
+            if compressed:
+                payload = _json.loads(zlib.decompress(base64.urlsafe_b64decode(compressed)).decode())
+                saved_clients  = payload.get("clients", {})
+                saved_projects = payload.get("projects", {})
+                for k,v in saved_clients.items():
+                    if k not in st.session_state["clients"]:
+                        st.session_state["clients"][k] = v
+                for k,v in saved_projects.items():
+                    if k not in st.session_state["projects"]:
+                        v.setdefault("docs", {})
+                        v.setdefault("doc_names", {})
+                        st.session_state["projects"][k] = v
+        except Exception:
+            pass
         st.session_state["storage_loaded"] = True
 
 def new_project(name, client, bid_date, address):
@@ -145,9 +149,49 @@ def module_status(p, mod):
     return p[mod.lower().replace(" ","_")]["status"]
 
 def module_locked(p, mod):
-    idx = MODULE_ORDER.index(mod)
-    if idx == 0: return False
-    return module_status(p, MODULE_ORDER[idx-1]) == "not_started"
+    """New unlock rules — modules open based on available docs, not chain."""
+    if mod == "Takeoff":
+        return False   # always open
+    if mod == "Point List":
+        # Unlocks when SOO or controls spec is uploaded
+        return not (p["docs"].get("SOO") or p["docs"].get("Controls spec"))
+    if mod == "Estimate":
+        # Unlocks when point list has rows OR controls spec uploaded
+        has_points = len(p["point_list"].get("rows", [])) > 0
+        has_spec   = bool(p["docs"].get("Controls spec") or p["docs"].get("SOO"))
+        return not (has_points or has_spec)
+    if mod == "Proposal":
+        # Unlocks when estimate has lines OR takeoff is done
+        has_estimate = len(p["estimate"].get("lines", [])) > 0
+        has_takeoff  = p["takeoff"]["status"] != "not_started"
+        return not (has_estimate or has_takeoff)
+    return False  # AI Advisor, Drawing Markup always open
+
+
+def module_data_warning(p, mod):
+    """Return warning text when module is open but missing some data."""
+    has_takeoff  = p["takeoff"]["status"] != "not_started"
+    has_points   = len(p["point_list"].get("rows", [])) > 0
+    has_estimate = len(p["estimate"].get("lines", [])) > 0
+    has_soo      = bool(p["docs"].get("SOO"))
+    has_spec     = bool(p["docs"].get("Controls spec"))
+
+    if mod == "Point List" and not has_takeoff:
+        return ("ℹ️ No takeoff loaded — point list will be generated from SOO/spec only. "
+                "Load takeoff for exact device tags.")
+    if mod == "Estimate" and not has_points:
+        return ("ℹ️ No point list yet — estimate will use rough point counts from SOO/spec. "
+                "Generate a point list first for more accurate hours.")
+    if mod == "Estimate" and not has_takeoff:
+        return ("ℹ️ No takeoff loaded — material quantities are estimated, not from drawings. "
+                "Load takeoff for accurate device counts.")
+    if mod == "Proposal" and not has_takeoff:
+        return ("ℹ️ No takeoff loaded — proposal will use SOO-based scope only. "
+                "Load takeoff to auto-fill Clarifications and Exclusions with real device tags.")
+    if mod == "Proposal" and not has_estimate:
+        return ("ℹ️ No estimate yet — proposal will not include a price. "
+                "Generate estimate first to include pricing.")
+    return None
 
 def chip(s, label):
     cls = {"done":"chip-done","in_progress":"chip-prog",
@@ -503,7 +547,7 @@ def page_project_detail(p):
     hc.markdown(f"## {p['name']}")
     hc.caption(f"{p.get('address','—')} · Client: {p.get('client','—')} · Bid: {p.get('bid_date','TBD')}")
 
-    # Build tab labels
+    # Build tab labels — all open, warn when data is partial
     tab_labels = []
     for mod in MODULE_ORDER + ["AI Advisor"]:
         if mod == "AI Advisor":
@@ -511,8 +555,9 @@ def page_project_detail(p):
         elif module_locked(p, mod):
             tab_labels.append(f"🔒 {mod}")
         else:
-            s = module_status(p,mod)
-            icon = "✅" if s=="done" else "⚠️" if s=="issues" else "📋"
+            s = module_status(p, mod)
+            warn = module_data_warning(p, mod)
+            icon = "✅" if s=="done" else "⚠️" if s=="issues" else ("📋" if not warn else "📋")
             tab_labels.append(f"{icon} {mod}")
     tab_labels.append("🖊 Drawing Markup")
 
@@ -524,9 +569,18 @@ def page_project_detail(p):
     for tab, mod, handler in zip(tabs, all_mods, handlers):
         with tab:
             if mod not in ("AI Advisor", "Drawing Markup") and module_locked(p, mod):
-                prev = MODULE_ORDER[MODULE_ORDER.index(mod)-1]
-                st.info(f"🔒 Complete **{prev}** first to unlock this module.")
+                # Show what to upload to unlock
+                unlock_msg = {
+                    "Point List": "Upload SOO or Controls spec in the Takeoff tab to unlock.",
+                    "Estimate":   "Generate a point list or upload Controls spec to unlock.",
+                    "Proposal":   "Generate an estimate or complete takeoff to unlock.",
+                }.get(mod, "Complete previous steps to unlock.")
+                st.info(f"🔒 **{mod} is locked.** {unlock_msg}")
             else:
+                # Show partial data warning if applicable
+                warn = module_data_warning(p, mod)
+                if warn and mod not in ("AI Advisor", "Drawing Markup", "Takeoff"):
+                    st.warning(warn)
                 handler(p)
 
 # ── Module 1: Takeoff ─────────────────────────────────────────────────────────
@@ -551,60 +605,65 @@ def module_takeoff(p):
             st.success("Saved."); st.rerun()
 
     st.divider()
-    col_btn, col_note = st.columns([1,3])
-    col_note.caption(
-        "AI reads your actual PDF content — extracts device tags from schedule pages, "
-        "cross-checks against SOO. Takes 15-30 seconds depending on document size."
-    )
-    if col_btn.button("🤖 Run AI Takeoff", type="primary", key="run_tk"):
-        k = api_key()
-        if not k:
-            st.error("❌ No API key. Add your Anthropic API key in the sidebar (sk-ant-...).")
-        elif not p["docs"]:
-            st.error("❌ No documents uploaded. Upload Drawings and/or SOO first.")
-        else:
-            prog = st.progress(0, text="Reading PDF content...")
-            try:
-                prog.progress(20, text="Extracting text from drawings...")
-                prog.progress(50, text="Sending to Claude — reading schedule pages and SOO...")
-                result = ai_takeoff(p, k)
-                prog.progress(100, text="Done.")
 
-                if result.get("error"):
-                    st.error(f"⚠️ AI returned an error: {result['error']}")
-                    st.info("Tip: Use 'Or upload schedule_ground_truth.json' for the demo instead.")
-                elif not result.get("equipment"):
-                    st.warning(
-                        "⚠️ No devices extracted. This usually means:\n"
-                        "1. The PDF text layer is not readable (scanned PDF needs OCR)\n"
-                        "2. The drawings don't contain schedule sheets\n"
-                        "3. The API call failed silently\n\n"
-                        "**For the demo: use 'Or upload schedule_ground_truth.json' below.**"
-                    )
-                else:
-                    p["takeoff"]["equipment"]     = result.get("equipment",[])
-                    p["takeoff"]["discrepancies"] = result.get("discrepancies",[])
-                    p["takeoff"]["status"]        = "issues" if result.get("discrepancies") else "done"
+    # ── Load takeoff data ─────────────────────────────────────────────────
+    st.markdown("**Extract takeoff data**")
+    tk_tab1, tk_tab2 = st.tabs(["📐 Read from drawings (recommended)", "📂 Upload JSON"])
+
+    with tk_tab1:
+        st.caption(
+            "Reads your uploaded drawing PDF directly — no API key needed. "
+            "Uses text layer search to find every device tag, then cross-checks "
+            "against the project SOO. Takes 5–15 seconds."
+        )
+        if not p["docs"].get("Drawings"):
+            st.warning("Upload drawings using 'Add / replace documents' above first.")
+        else:
+            fname = p["doc_names"].get("Drawings","")
+            st.info(f"📐 Ready to read: `{fname}`")
+            if st.button("🔍 Extract takeoff from drawings", type="primary", key="run_tk"):
+                prog = st.progress(0, text="Opening PDF...")
+                try:
+                    prog.progress(15, text="Reading text layer...")
+                    pdf_bytes = p["docs"]["Drawings"]
+                    prog.progress(40, text="Scanning for device tags...")
+                    result = run_pdf_takeoff(pdf_bytes)
+                    prog.progress(80, text="Cross-checking against SOO...")
+                    takeoff = takeoff_to_session_format(result)
+                    prog.progress(100, text="Done.")
+
+                    p["takeoff"].update(takeoff)
                     _save_app_state()
+
+                    stats = result["stats"]
                     st.success(
-                        f"✅ Extracted {len(result['equipment'])} devices · "
-                        f"{len(result.get('discrepancies',[]))} discrepancies found"
+                        f"✅ Read {stats['total_pages']} pages · "
+                        f"{stats['schedule_pages']} schedule pages · "
+                        f"{stats['total_tags']} devices found · "
+                        f"{stats['discrepancies']} discrepancies"
                     )
                     st.rerun()
-            except Exception as e:
-                prog.progress(100, text="Error.")
-                st.error(f"❌ Error during takeoff: {e}")
-                st.info("Use 'Or upload schedule_ground_truth.json' below for the demo.")
+                except Exception as e:
+                    prog.progress(100, text="Error.")
+                    st.error(f"Error reading PDF: {e}")
+                    st.info("If this keeps failing, use the 'Upload JSON' tab instead.")
 
-    with st.expander("Or upload schedule_ground_truth.json"):
-        gt = st.file_uploader("JSON", type=["json"], key="tk_gt")
-        if gt and st.button("Load JSON", key="tk_load"):
-            data = json.load(gt)
-            equip = data.get("equipment",[])
-            p["takeoff"]["equipment"]     = equip
-            p["takeoff"]["discrepancies"] = [e for e in equip if e.get("discrepancy_flag")]
-            p["takeoff"]["status"]        = "issues" if p["takeoff"]["discrepancies"] else "done"
-            st.success(f"Loaded {len(equip)} devices."); st.rerun()
+    with tk_tab2:
+        st.caption("Upload a pre-processed schedule_ground_truth.json file.")
+        gt = st.file_uploader("schedule_ground_truth.json", type=["json"], key="tk_gt")
+        if gt:
+            if st.button("Load JSON", key="tk_load", type="primary"):
+                data = json.load(gt)
+                equip = data.get("equipment", [])
+                p["takeoff"]["equipment"]     = equip
+                p["takeoff"]["discrepancies"] = [e for e in equip if e.get("discrepancy_flag")]
+                p["takeoff"]["status"]        = "issues" if p["takeoff"]["discrepancies"] else "done"
+                _save_app_state()
+                st.success(
+                    f"✅ Loaded {len(equip)} devices · "
+                    f"{len(p['takeoff']['discrepancies'])} discrepancies"
+                )
+                st.rerun()
 
     equip = p["takeoff"].get("equipment",[])
     discs = p["takeoff"].get("discrepancies",[])
@@ -675,10 +734,20 @@ def module_point_list(p):
     else:
         st.info("No client template. AI uses standard columns. Add a template in the Clients tab.")
 
+    has_takeoff = len(p["takeoff"].get("equipment", [])) > 0
+    has_soo     = bool(p["docs"].get("SOO"))
+    has_spec    = bool(p["docs"].get("Controls spec"))
+
+    if not has_takeoff:
+        st.info("ℹ️ No takeoff loaded — point list will be generated from SOO/spec. "
+                "Exact device tags will not be available until takeoff is done.")
+    if not has_soo and not has_spec:
+        st.warning("⚠️ Upload SOO or Controls spec in the Takeoff tab for best results.")
+
     if st.button("🤖 Generate point list", type="primary", key="gen_pl"):
         k = api_key()
-        if not k: st.error("Add API key in sidebar.")
-        elif not p["takeoff"].get("equipment"): st.error("Complete takeoff first.")
+        if not k:
+            st.error("Add API key in sidebar.")
         else:
             with st.spinner("Claude is reading SOO and controls spec to generate point list..."):
                 rows = ai_point_list(p, k, pl_tmpl, pl_name)
@@ -1156,35 +1225,87 @@ def ai_point_list(p, k, pl_tmpl, pl_name):
             df = pd.read_excel(io.BytesIO(pl_tmpl), nrows=2)
             col_desc = f"Match these client template columns exactly: {', '.join(str(c) for c in df.columns)}"
         except: pass
-    equip = p["takeoff"].get("equipment",[])[:30]
+
+    # Use takeoff devices if available, otherwise use SOO-based system list
+    equip = p["takeoff"].get("equipment", [])[:30]
+    has_takeoff = len(equip) > 0
+
+    # Extract SOO text if available
+    soo_text = ""
+    if p["docs"].get("SOO"):
+        soo_text = _extract_pdf_text(p["docs"]["SOO"], max_chars=8000)
+    spec_text = ""
+    if p["docs"].get("Controls spec"):
+        spec_text = _extract_pdf_text(p["docs"]["Controls spec"], max_chars=4000)
+
+    if has_takeoff:
+        device_context = f"Devices from takeoff (sample): {json.dumps(equip)}"
+    else:
+        device_context = (
+            "No takeoff loaded. Generate point list based on systems found in the SOO. "
+            "Use generic system names as the System/Device column (e.g. 'Fan Coil Unit', "
+            "'DOAS Unit', 'Hot Water Pump') rather than specific tags."
+        )
+
     prompt = (
-        f"Generate a BMS point list for '{p['name']}'.\n{col_desc}\n"
-        f"Devices (sample): {json.dumps(equip)}\n"
-        f"SOO: {p['doc_names'].get('SOO','not provided')} | Spec: {p['doc_names'].get('Controls spec','not provided')}\n"
-        f"For each device list all required BMS points. Use '1' for present, '' for N/A.\n"
-        f'Example: {{"System/Device":"FCU-SC-1","Tag":"Fan Enable","Description":"Fan start/stop","Qty":1,"AI":"","AO":"","DI":"","DO":"1","HWI":"","Network":"","Notes":""}}\n'
-        f"Return ONLY a JSON array."
+        f"Generate a BMS point list for project '{p['name']}'.\n"
+        f"{col_desc}\n\n"
+        f"{device_context}\n\n"
+        f"SOO content:\n{soo_text[:6000] if soo_text else 'Not provided'}\n\n"
+        f"Controls spec:\n{spec_text[:3000] if spec_text else 'Not provided'}\n\n"
+        f"For each system/device, list ALL required BMS monitoring and control points. "
+        f"Use '1' for point present, '' for N/A. "
+        f"Base point types on the SOO sequences above.\n"
+        f'Example row: {{"System/Device":"FCU-SC-1","Tag":"Fan Enable","Description":"Fan start/stop command","Qty":1,"AI":"","AO":"","DI":"","DO":"1","HWI":"","Network":"","Notes":""}}\n'
+        f"Return ONLY a JSON array, no other text."
     )
     raw = _claude(k, prompt, 3000) or ""
     try:
         clean = raw.strip()
         if "```" in clean: clean = clean.split("```")[1]; clean = clean[4:] if clean.startswith("json") else clean
         return json.loads(clean.strip())
-    except: return [{"System/Device":"Parse error","Tag":raw[:80],"Description":"","Qty":"","AI":"","AO":"","DI":"","DO":"","HWI":"","Network":"","Notes":""}]
+    except:
+        return [{"System/Device":"Parse error","Tag":raw[:80],"Description":"","Qty":"","AI":"","AO":"","DI":"","DO":"","HWI":"","Network":"","Notes":""}]
 
 def ai_estimate(p, k, rates, markup):
-    pts   = len(p["point_list"].get("rows",[]))
-    devs  = len(p["takeoff"].get("equipment",[]))
+    pts  = len(p["point_list"].get("rows", []))
+    devs = len(p["takeoff"].get("equipment", []))
+
+    # Extract spec/SOO context for better estimates
+    soo_text  = _extract_pdf_text(p["docs"]["SOO"],  max_chars=5000) if p["docs"].get("SOO")  else ""
+    spec_text = _extract_pdf_text(p["docs"].get("Controls spec") or b"", max_chars=3000) if p["docs"].get("Controls spec") else ""
+
+    has_takeoff  = devs > 0
+    has_pl       = pts > 0
+
+    if has_takeoff and has_pl:
+        basis = f"Takeoff: {devs} devices. Point list: {pts} points."
+    elif has_pl:
+        basis = f"Point list: {pts} points (no takeoff loaded — device counts are estimated)."
+    elif has_takeoff:
+        basis = f"Takeoff: {devs} devices (no point list — estimating ~5 pts/device)."
+        pts = devs * 5
+    else:
+        basis = "No takeoff or point list — estimating from SOO/spec scope only. Counts are rough."
+        pts = 50  # rough default
+
     prompt = (
-        f"Generate a BMS estimate for '{p['name']}'. Points: {pts}, Devices: {devs}.\n"
+        f"Generate a BMS labor estimate for project '{p['name']}'.\n"
+        f"Basis: {basis}\n"
         f"Labor rates: {json.dumps(rates)}. Markup: {markup}%.\n"
-        f"Docs: {', '.join(p.get('doc_names',{}).keys())}.\n"
-        f"Hour formulas: Engineering=0.5×pts, Programming=1.0×pts, Integration=0.5×pts, Graphics=0.5×pts, Startup=0.5×pts.\n"
+        f"SOO context: {soo_text[:3000] if soo_text else 'not provided'}\n"
+        f"Controls spec: {spec_text[:2000] if spec_text else 'not provided'}\n\n"
+        f"Hour formulas: Engineering=0.5×pts, Programming=1.0×pts, "
+        f"Integration=0.5×pts, Graphics=0.5×pts, Startup=0.5×pts.\n"
+        f"Group by system (FCUs, DOAS, Pumps, Heat Pumps, Life Safety, etc).\n"
         f"Return ONLY a JSON array:\n"
-        f'[{{"System":"Fan Coil Units (Subcellar)","Qty":8,"Points":40,"Engineering (hrs)":20,'
-        f'"Programming (hrs)":40,"Integration (hrs)":20,"Graphics (hrs)":20,"Startup (hrs)":20,'
-        f'"Total hrs":120,"Rate ($/hr)":{rates.get("Programming",85)},"Total $":10200,"Notes":"8 FCUs × 5 pts"}}]\n'
-        f"Include rows for each system group plus: panel/hardware allowance, engineering/submittal, commissioning, project management.\n"
+        f'[{{"System":"Fan Coil Units","Qty":8,"Points":40,'
+        f'"Engineering (hrs)":20,"Programming (hrs)":40,"Integration (hrs)":20,'
+        f'"Graphics (hrs)":20,"Startup (hrs)":20,"Total hrs":120,'
+        f'"Rate ($/hr)":{rates.get("Programming",85)},"Total $":10200,'
+        f'"Notes":"Based on SOO Section 1.10"}}]\n'
+        f"Add rows for: panel/hardware allowance, engineering/submittal, "
+        f"commissioning, project management.\n"
         f"Return ONLY the JSON array."
     )
     raw = _claude(k, prompt, 2500) or ""
@@ -1192,20 +1313,32 @@ def ai_estimate(p, k, rates, markup):
         clean = raw.strip()
         if "```" in clean: clean = clean.split("```")[1]; clean = clean[4:] if clean.startswith("json") else clean
         return json.loads(clean.strip())
-    except: return [{"System":"Parse error","Qty":0,"Points":0,"Engineering (hrs)":0,"Programming (hrs)":0,"Integration (hrs)":0,"Graphics (hrs)":0,"Startup (hrs)":0,"Total hrs":0,"Rate ($/hr)":0,"Total $":0,"Notes":raw[:80]}]
+    except:
+        return [{"System":"Parse error","Qty":0,"Points":0,
+                 "Engineering (hrs)":0,"Programming (hrs)":0,"Integration (hrs)":0,
+                 "Graphics (hrs)":0,"Startup (hrs)":0,"Total hrs":0,
+                 "Rate ($/hr)":0,"Total $":0,"Notes":raw[:80]}]
 
 def ai_proposal(p, k):
     cl      = st.session_state.clients.get(p.get("client"),{}) if p.get("client") else {}
     tmpl    = cl.get("prop_template_bytes")
     equip   = p["takeoff"].get("equipment",[])
     lines   = p["estimate"].get("lines",[])
-    agg     = defaultdict(int)
-    for e in equip: agg[e.get("system","Unknown")]+=1
-    scope   = "; ".join(f"{v}× {k}" for k,v in list(agg.items())[:15])
+
+    # Build scope from takeoff if available, otherwise from SOO
+    if equip:
+        agg = defaultdict(int)
+        for e in equip: agg[e.get("system","Unknown")]+=1
+        scope = "; ".join(f"{v}× {k}" for k,v in list(agg.items())[:15])
+    else:
+        # Extract scope from SOO
+        soo_text = _extract_pdf_text(p["docs"]["SOO"], max_chars=4000) if p["docs"].get("SOO") else ""
+        scope = f"Scope based on SOO (no takeoff loaded): {soo_text[:500]}..." if soo_text else "Scope to be confirmed"
+
     try:
         total = sum(float(r.get("Total $",0)) for r in lines)*(1+p["estimate"].get("markup",10)/100)
         price = f"${total:,.0f}"
-    except: price = "[TO BE DETERMINED]"
+    except: price = "[TO BE DETERMINED — complete estimate first]"
     tmpl_note = ""
     if tmpl:
         try:
