@@ -269,7 +269,7 @@ def page_overview():
     # ── Header ────────────────────────────────────────────────────────────
     hc1, hc2 = st.columns([4, 1])
     hc1.markdown("## BMS Estimator")
-    hc1.caption(f"TEC Building Systems  ·  {today.strftime('%B %d, %Y')}")
+    hc1.caption(today.strftime('%B %d, %Y'))
     if hc2.button("＋ New project", type="primary",
                   use_container_width=True, key="ov_new"):
         st.session_state.nav = "Projects"
