@@ -199,98 +199,173 @@ def api_key():
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 def sidebar():
     with st.sidebar:
-        st.markdown("## 🏗 BMS Estimator")
-        st.caption(f"FY {date.today().year}")
-        st.divider()
+        # ── Logo / header ──────────────────────────────────────────────
+        st.markdown("""
+        <style>
+        [data-testid="stSidebar"] {
+            background: #1a1f2e;
+        }
+        [data-testid="stSidebar"] * {
+            color: #e2e8f0 !important;
+        }
+        .sb-logo {
+            font-size: 18px; font-weight: 700; color: #fff !important;
+            padding: 8px 4px 4px; letter-spacing: .02em;
+        }
+        .sb-logo span { color: #6366f1 !important; }
+        .sb-year { font-size: 11px; color: #64748b !important; padding: 0 4px 16px; }
+        .sb-section {
+            font-size: 10px; font-weight: 600; color: #475569 !important;
+            text-transform: uppercase; letter-spacing: .08em;
+            padding: 14px 4px 6px;
+        }
+        .sb-nav-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 12px; border-radius: 7px; margin-bottom: 2px;
+            font-size: 13px; font-weight: 500; cursor: pointer;
+            color: #cbd5e1 !important; text-decoration: none;
+        }
+        .sb-nav-item:hover { background: #2d3548; }
+        .sb-nav-active {
+            background: #6366f1 !important; color: #fff !important;
+        }
+        .sb-proj-name {
+            display: flex; align-items: center; gap: 8px;
+            padding: 7px 10px; border-radius: 7px; margin-bottom: 1px;
+            font-size: 13px; font-weight: 600; color: #f1f5f9 !important;
+            cursor: pointer;
+        }
+        .sb-proj-name:hover { background: #2d3548; }
+        .sb-proj-active { background: #2d3548; }
+        .sb-task {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 10px 5px 28px; border-radius: 6px;
+            margin-bottom: 1px; font-size: 12px; color: #94a3b8 !important;
+            cursor: pointer;
+        }
+        .sb-task:hover { background: #232838; color: #e2e8f0 !important; }
+        .sb-task-active {
+            background: #232838 !important; color: #a5b4fc !important;
+            font-weight: 600;
+        }
+        .sb-dot { font-size: 8px; }
+        .sb-divider {
+            border: none; border-top: 1px solid #2d3548;
+            margin: 10px 0;
+        }
+        /* Override Streamlit button styles in sidebar */
+        [data-testid="stSidebar"] .stButton button {
+            background: transparent !important;
+            border: none !important;
+            color: #cbd5e1 !important;
+            text-align: left !important;
+            padding: 6px 10px !important;
+            border-radius: 7px !important;
+            font-size: 13px !important;
+            width: 100% !important;
+        }
+        [data-testid="stSidebar"] .stButton button:hover {
+            background: #2d3548 !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
-        # ── Top nav ───────────────────────────────────────────────────
-        for label in ["Overview", "Projects", "Reports"]:
-            active = (st.session_state.nav == label and
-                      (label != "Projects" or not st.session_state.active_project))
-            if st.button(label, key=f"nav_{label}",
-                         type="primary" if active else "secondary",
+        st.markdown('<div class="sb-logo">🏗 <span>BMS</span> Estimator</div>',
+                    unsafe_allow_html=True)
+        st.markdown(f'<div class="sb-year">FY {date.today().year}</div>',
+                    unsafe_allow_html=True)
+
+        # ── Main nav ───────────────────────────────────────────────────
+        nav_items = [
+            ("🏠", "Overview"),
+            ("📁", "Projects"),
+            ("📊", "Reports"),
+        ]
+
+        for icon, label in nav_items:
+            is_active = (st.session_state.nav == label and
+                         (label != "Projects" or
+                          not st.session_state.active_project))
+            style = "sb-nav-item sb-nav-active" if is_active else "sb-nav-item"
+            # Use a real button but styled via CSS
+            if st.button(f"{icon}  {label}", key=f"nav_{label}",
                          use_container_width=True):
                 st.session_state.nav = label
-                if label != "Projects":
-                    st.session_state.active_project = None
-                else:
-                    st.session_state.active_project = None
+                st.session_state.active_project = None
                 st.rerun()
 
-        # ── Project sub-branches ──────────────────────────────────────
+        # ── Projects sub-tree ──────────────────────────────────────────
         if st.session_state.projects:
-            st.divider()
+            st.markdown('<hr class="sb-divider">', unsafe_allow_html=True)
+            st.markdown('<div class="sb-section">Recent Projects</div>',
+                        unsafe_allow_html=True)
 
-            MODULES_NAV = [
-                ("📐", "Takeoff"),
-                ("📋", "Point List"),
-                ("💰", "Estimate"),
-                ("📄", "Proposal"),
-                ("🖊",  "Drawing Markup"),
-                ("🤖", "AI Advisor"),
-            ]
+            TASK_ICONS = {
+                "Takeoff":        "📐",
+                "Point List":     "📋",
+                "Estimate":       "💰",
+                "Proposal":       "📄",
+                "Drawing Markup": "🖊",
+                "AI Advisor":     "🤖",
+            }
+            STATUS_DOT = {
+                "done":        ("🟢", "#22c55e"),
+                "in_progress": ("🟡", "#f59e0b"),
+                "issues":      ("🟡", "#f59e0b"),
+                "not_started": ("○",  "#475569"),
+            }
 
             for pname, p in st.session_state.projects.items():
-                disc     = len(p["takeoff"].get("discrepancies", []))
-                is_open  = st.session_state.active_project == pname
-                proj_label = f"▶ {pname}" if is_open else pname
+                is_open = st.session_state.active_project == pname
+                disc    = len(p["takeoff"].get("discrepancies", []))
 
-                # Project name button
-                if st.button(proj_label,
+                # Project row
+                proj_icon = "▾" if is_open else "▸"
+                if st.button(f"{proj_icon}  {pname}",
                              key=f"sb_proj_{pname}",
-                             use_container_width=True,
-                             type="primary" if is_open else "secondary"):
+                             use_container_width=True):
                     st.session_state.active_project = pname
                     st.session_state.active_module  = "Takeoff"
                     st.session_state.nav            = "Projects"
                     st.rerun()
 
-                # Sub-tasks — only show when project is open
+                # Task rows — only when project open
                 if is_open:
-                    for icon, mod in MODULES_NAV:
+                    for mod, icon in TASK_ICONS.items():
                         is_active_mod = st.session_state.active_module == mod
 
-                        # Status indicator
-                        s = p.get(mod.lower().replace(" ","_"), {})
-                        if isinstance(s, dict):
-                            status = s.get("status", "not_started")
+                        # Get status dot
+                        if mod in MODULE_ORDER:
+                            s = module_status(p, mod)
+                            if mod == "Takeoff" and disc and s != "done":
+                                dot, dot_color = "⚠", "#f59e0b"
+                            else:
+                                dot, dot_color = STATUS_DOT.get(
+                                    s, ("○", "#475569"))
                         else:
-                            status = "not_started"
-                        dot = ("🟢" if status == "done" else
-                               "🟡" if status == "in_progress" else
-                               "🔴" if (mod == "Takeoff" and disc) else "⚪")
+                            dot, dot_color = "○", "#475569"
 
-                        # Indent + style
-                        btn_label = f"  {icon} {mod}"
-                        btn_style = "primary" if is_active_mod else "secondary"
+                        label = f"{icon}  {mod}"
+                        if is_active_mod:
+                            label = f"{icon}  {mod}"
 
-                        # Use markdown for indented look
-                        col_indent, col_btn = st.columns([0.12, 0.88])
-                        col_indent.markdown(
-                            f'<div style="text-align:right;padding-top:6px;'
-                            f'font-size:9px;color:#cbd5e1">{"│"}</div>',
-                            unsafe_allow_html=True)
-                        if col_btn.button(
-                            f"{dot} {mod}",
-                            key=f"sb_mod_{pname}_{mod}",
-                            use_container_width=True,
-                            type=btn_style
-                        ):
+                        if st.button(label,
+                                     key=f"sb_mod_{pname}_{mod}",
+                                     use_container_width=True):
                             st.session_state.active_project = pname
                             st.session_state.active_module  = mod
                             st.session_state.nav            = "Projects"
                             st.rerun()
 
-                    if disc:
-                        st.caption(f"    ⚠️ {disc} discrepancies")
+        st.markdown('<hr class="sb-divider">', unsafe_allow_html=True)
 
-                st.markdown("")  # spacing between projects
-
-        st.divider()
-        k = st.text_input("Anthropic API key", type="password",
+        # ── API key ────────────────────────────────────────────────────
+        k = st.text_input("API key", type="password",
                           value=os.environ.get("ANTHROPIC_API_KEY", ""),
-                          key="api_key_input")
-        if k: st.session_state["anthropic_api_key"] = k
+                          key="api_key_input",
+                          placeholder="sk-ant-...")
+        if k:
+            st.session_state["anthropic_api_key"] = k
 
 # ── Overview ──────────────────────────────────────────────────────────────────
 def page_overview():
@@ -698,196 +773,403 @@ def page_projects():
         page_projects_list()
 
 def page_projects_list():
-    st.title("Projects")
+    today    = date.today()
     projects = st.session_state.projects
 
-    with st.expander("➕ New project", expanded=not bool(projects)):
-        with st.form("new_proj"):
-            # ── Basic info ────────────────────────────────────────────
-            st.markdown("**Project details**")
-            c1,c2 = st.columns(2)
-            pname    = c1.text_input("Project name *")
-            address  = c2.text_input("Address")
-            c3,c4   = st.columns(2)
-            bid_date = c3.date_input("Bid date", value=None)
-            # Saved client templates (for reuse)
-            saved_names = list(st.session_state.clients.keys())
-            client_opts = ["New client / no template"] + saved_names
-            client_sel  = c4.selectbox("Reuse saved settings", client_opts,
-                                        help="Pick a previously saved client to auto-fill rates and templates")
+    # ── Styles ────────────────────────────────────────────────────────
+    st.markdown("""<style>
+    .proj-table-hdr {
+        display:grid;
+        grid-template-columns:60px 1fr 60px 120px 80px 80px 100px 90px;
+        padding:8px 12px; background:#f8fafc;
+        border:1px solid #e2e8f0; border-radius:8px 8px 0 0;
+        font-size:11px; font-weight:600; color:#64748b;
+        text-transform:uppercase; letter-spacing:.05em;
+    }
+    .proj-table-row {
+        display:grid;
+        grid-template-columns:60px 1fr 60px 120px 80px 80px 100px 90px;
+        padding:10px 12px; border:1px solid #e2e8f0;
+        border-top:none; background:#fff;
+        font-size:13px; align-items:center;
+        transition:background .1s;
+    }
+    .proj-table-row:hover { background:#f8fafc; cursor:pointer; }
+    .proj-table-row:last-child { border-radius:0 0 8px 8px; }
+    .status-badge {
+        display:inline-block; padding:3px 10px; border-radius:20px;
+        font-size:11px; font-weight:600;
+    }
+    .status-inprog  { background:#dbeafe; color:#1e40af; }
+    .status-done    { background:#dcfce7; color:#166534; }
+    .status-review  { background:#fef9c3; color:#854d0e; }
+    .status-new     { background:#f1f5f9; color:#64748b; }
+    .pct-bar-track  { height:5px; border-radius:3px;
+                      background:#e2e8f0; width:100%; }
+    .pct-bar-fill   { height:5px; border-radius:3px;
+                      background:linear-gradient(90deg,#6366f1,#10b981); }
+    .tmpl-card {
+        border:1px solid #e2e8f0; border-radius:10px;
+        padding:14px 16px; background:#fff; margin-bottom:8px;
+    }
+    .tmpl-name { font-size:14px; font-weight:600; color:#1e293b; }
+    .tmpl-meta { font-size:12px; color:#64748b; margin-top:3px; }
+    </style>""", unsafe_allow_html=True)
 
-            st.divider()
+    # ── Header ────────────────────────────────────────────────────────
+    h1,h2 = st.columns([3,1])
+    h1.markdown("## Projects")
+    h1.caption(f"{len(projects)} active · {today.strftime('%B %d, %Y')}")
+    if h2.button("＋ New project", type="primary",
+                 use_container_width=True, key="pl_new"):
+        st.session_state["show_new_proj"] = True
 
-            # ── Templates ─────────────────────────────────────────────
-            st.markdown("**Templates** *(optional — skip if not needed)*")
-            t1,t2 = st.columns(2)
-            pl_file   = t1.file_uploader("Point list template (.xlsx)",
-                                          type=["xlsx"], key="np_pl")
-            prop_file = t2.file_uploader("Proposal template (.docx)",
-                                          type=["docx"], key="np_prop")
-            t1.caption("AI matches your column format exactly")
-            t2.caption("Use {{PROJECT_NAME}} {{CLIENT}} {{DATE}} {{SCOPE_TEXT}}")
+    # ── Tabs: Active Projects | Templates ─────────────────────────────
+    tab_active, tab_tmpl = st.tabs(["📁 Active Projects", "📋 Templates"])
 
-            st.divider()
+    # ════════════════════════════════════════════════════════════════════
+    # TAB 1: Active Projects
+    # ════════════════════════════════════════════════════════════════════
+    with tab_active:
 
-            # ── Labor rates ───────────────────────────────────────────
-            st.markdown("**Labor rates ($/hr)**")
-            # Pre-fill from saved client if selected
-            saved_rates = (st.session_state.clients.get(client_sel, {}).get("rates", DEFAULT_RATES)
-                           if client_sel != "New client / no template" else DEFAULT_RATES)
-            rc = st.columns(len(PHASES))
-            rates = {}
-            for i,ph in enumerate(PHASES):
-                rates[ph] = rc[i].number_input(ph, 0, 500,
-                                                int(saved_rates.get(ph, DEFAULT_RATES[ph])),
-                                                key=f"np_rate_{ph}")
+        # New project form (shown when button clicked)
+        if st.session_state.get("show_new_proj"):
+            with st.container(border=True):
+                st.markdown("**New project**")
+                with st.form("new_proj"):
+                    c1,c2 = st.columns(2)
+                    pname    = c1.text_input("Project name *")
+                    address  = c2.text_input("Address / location")
+                    c3,c4   = st.columns(2)
+                    bid_date = c3.date_input("Bid date", value=None)
 
-            st.divider()
+                    # Template picker
+                    tmpls    = st.session_state.get("templates", {})
+                    tmpl_opts = ["No template"] + list(tmpls.keys())
+                    tmpl_sel  = c4.selectbox("Apply template", tmpl_opts,
+                                              help="Auto-fill rates and formats")
 
-            # ── Documents ─────────────────────────────────────────────
-            st.markdown("**Project documents** *(upload now or later in Takeoff tab)*")
-            d1,d2,d3 = st.columns(3)
-            draw_f = d1.file_uploader("Drawings (PDF)",   type=["pdf"],        key="np_draw")
-            soo_f  = d2.file_uploader("SOO (PDF/DOCX)",   type=["pdf","docx"], key="np_soo")
-            spec_f = d3.file_uploader("Controls spec",    type=["pdf","docx"], key="np_spec")
+                    st.markdown("**Documents** *(optional — upload later in Takeoff)*")
+                    d1,d2,d3 = st.columns(3)
+                    draw_f = d1.file_uploader("Drawings (PDF)",  type=["pdf"],        key="np_draw")
+                    soo_f  = d2.file_uploader("SOO (PDF/DOCX)",  type=["pdf","docx"], key="np_soo")
+                    spec_f = d3.file_uploader("Controls spec",   type=["pdf","docx"], key="np_spec")
 
-            if st.form_submit_button("Create project", type="primary"):
-                if not pname:
-                    st.error("Project name required.")
-                elif pname in projects:
-                    st.error("A project with this name already exists.")
-                else:
-                    # Use saved client name as label if reusing
-                    client_label = (client_sel
-                                    if client_sel != "New client / no template"
-                                    else None)
-                    p = new_project(pname, client_label,
-                                    str(bid_date) if bid_date else None, address)
-
-                    # Attach documents
-                    for label,f in [("Drawings",draw_f),("SOO",soo_f),
-                                    ("Controls spec",spec_f)]:
-                        if f:
-                            p["docs"][label]      = f.read()
-                            p["doc_names"][label] = f.name
-
-                    # Set rates
-                    p["estimate"]["rates"] = dict(rates)
-
-                    # Save templates into clients store for reuse
-                    if pl_file or prop_file:
-                        entry = {"rates": rates}
-                        if pl_file:
-                            entry["pl_template_bytes"] = pl_file.read()
-                            entry["pl_template_name"]  = pl_file.name
-                        if prop_file:
-                            entry["prop_template_bytes"] = prop_file.read()
-                            entry["prop_template_name"]  = prop_file.name
-                        # Save under project name so it can be reused
-                        key = client_label or pname
-                        st.session_state.clients[key] = entry
-                    elif client_label:
-                        # Inherit templates from saved client
-                        saved_cl = st.session_state.clients.get(client_label, {})
-                        if saved_cl:
-                            p["_inherited_client"] = client_label
-
-                    st.session_state.projects[pname] = p
-                    st.session_state.active_project  = pname
-                    st.session_state.active_module   = "Takeoff"
-                    _save_app_state()
-                    st.success(f"✅ '{pname}' created.")
-                    st.rerun()
-
-    # Edit state
-    if "editing_project" not in st.session_state:
-        st.session_state.editing_project = None
-
-    for pname,p in list(projects.items()):
-        disc = len(p["takeoff"].get("discrepancies",[]))
-        devs = len(p["takeoff"].get("equipment",[]))
-        with st.container(border=True):
-
-            # ── Editing mode ──────────────────────────────────────────
-            if st.session_state.editing_project == pname:
-                st.markdown(f"**Editing: {pname}**")
-                with st.form(f"edit_proj_{pname}"):
-                    ec1,ec2 = st.columns(2)
-                    new_name    = ec1.text_input("Project name", value=pname)
-                    new_address = ec2.text_input("Address", value=p.get("address",""))
-                    ec3,ec4 = st.columns(2)
-                    client_opts = ["(no client)"] + list(st.session_state.clients.keys())
-                    cur_client  = p.get("client") or "(no client)"
-                    new_client  = ec3.selectbox("Client", client_opts,
-                                                index=client_opts.index(cur_client)
-                                                if cur_client in client_opts else 0)
-                    cur_bid = None
-                    try:
-                        from datetime import date as _date
-                        cur_bid = _date.fromisoformat(str(p.get("bid_date",""))) if p.get("bid_date") else None
-                    except Exception:
-                        pass
-                    new_bid = ec4.date_input("Bid date", value=cur_bid)
-                    sc1,sc2 = st.columns(2)
-                    if sc1.form_submit_button("Save changes", type="primary"):
-                        if new_name and new_name != pname:
-                            projects[new_name] = projects.pop(pname)
-                            pname = new_name
-                            p = projects[pname]
-                        p["address"]  = new_address
-                        p["client"]   = new_client if new_client != "(no client)" else None
-                        p["bid_date"] = str(new_bid) if new_bid else None
-                        if new_client and new_client != "(no client)":
-                            cl = st.session_state.clients.get(new_client,{})
-                            if cl.get("rates"):
-                                p["estimate"]["rates"] = dict(cl["rates"])
-                        st.session_state.editing_project = None
-                        _save_app_state()
-                        st.rerun()
-                    if sc2.form_submit_button("Cancel"):
-                        st.session_state.editing_project = None
+                    fc1,fc2 = st.columns(2)
+                    if fc1.form_submit_button("Create project", type="primary"):
+                        if not pname:
+                            st.error("Project name required.")
+                        elif pname in projects:
+                            st.error("Name already exists.")
+                        else:
+                            p = new_project(pname, None,
+                                            str(bid_date) if bid_date else None,
+                                            address)
+                            for lbl,f in [("Drawings",draw_f),
+                                          ("SOO",soo_f),
+                                          ("Controls spec",spec_f)]:
+                                if f:
+                                    p["docs"][lbl]      = f.read()
+                                    p["doc_names"][lbl] = f.name
+                            # Apply template rates/templates
+                            tmpl = tmpls.get(tmpl_sel, {})
+                            p["estimate"]["rates"] = dict(
+                                tmpl.get("rates", DEFAULT_RATES))
+                            if tmpl.get("pl_template_bytes"):
+                                st.session_state.clients[pname] = {
+                                    "rates":              tmpl["rates"],
+                                    "pl_template_bytes":  tmpl["pl_template_bytes"],
+                                    "pl_template_name":   tmpl.get("pl_template_name",""),
+                                    "prop_template_bytes":tmpl.get("prop_template_bytes"),
+                                    "prop_template_name": tmpl.get("prop_template_name",""),
+                                }
+                            st.session_state.projects[pname] = p
+                            st.session_state.active_project  = pname
+                            st.session_state.active_module   = "Takeoff"
+                            st.session_state["show_new_proj"] = False
+                            _save_app_state()
+                            st.success(f"✅ '{pname}' created.")
+                            st.rerun()
+                    if fc2.form_submit_button("Cancel"):
+                        st.session_state["show_new_proj"] = False
                         st.rerun()
 
-            # ── Normal view ───────────────────────────────────────────
-            else:
-                r1,r2,r3 = st.columns([3,4,2])
-                r1.markdown(f"### {pname}")
-                r1.caption(f"{p.get('address','—')} · Client: {p.get('client','—')}")
-                r1.caption(f"Bid: {p.get('bid_date','TBD')} · {devs} devices")
-                html = ""
-                for mod in MODULE_ORDER:
-                    s = module_status(p,mod)
-                    lbl = (f"⚠️{disc}" if mod=="Takeoff" and disc else
-                           ("Done" if s=="done" else ("In progress" if s=="in_progress" else "—")))
-                    html += chip("issues" if mod=="Takeoff" and disc else s, f"{mod}: {lbl}") + " "
-                r2.markdown(html, unsafe_allow_html=True)
-                rb1,rb2,rb3 = r3.columns(3)
-                if rb1.button("Open", key=f"op_{pname}", type="primary"):
+        if not projects:
+            st.markdown("""
+            <div style="border:2px dashed #e2e8f0;border-radius:12px;
+                        padding:48px;text-align:center;margin-top:16px">
+                <div style="font-size:32px;margin-bottom:10px">📋</div>
+                <div style="font-size:16px;font-weight:600;color:#475569">
+                    No projects yet</div>
+                <div style="font-size:13px;color:#94a3b8;margin-top:6px">
+                    Click <strong>＋ New project</strong> to get started</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            # ── Filter bar ────────────────────────────────────────────
+            fc1,fc2,fc3 = st.columns([2,1,1])
+            search   = fc1.text_input("", placeholder="🔍  Search projects…",
+                                       label_visibility="collapsed", key="pl_search")
+            sort_by  = fc2.selectbox("Sort by",
+                                      ["Bid date","Name","% Complete","Status"],
+                                      label_visibility="collapsed", key="pl_sort")
+            filt_st  = fc3.selectbox("Status",
+                                      ["All","In Progress","Review","Complete","New"],
+                                      label_visibility="collapsed", key="pl_filt")
+
+            # ── Build rows ────────────────────────────────────────────
+            rows = []
+            for i,(pname,p) in enumerate(projects.items()):
+                disc  = len(p["takeoff"].get("discrepancies",[]))
+                devs  = len(p["takeoff"].get("equipment",[]))
+                bd    = p.get("bid_date","")
+                done_n= sum(1 for m in MODULE_ORDER
+                            if module_status(p,m) in ("done","in_progress"))
+                pct   = int(done_n/len(MODULE_ORDER)*100)
+
+                # Status
+                ps = module_status(p,"Proposal")
+                es = module_status(p,"Estimate")
+                if ps == "done":                    status = "Complete"
+                elif disc:                          status = "Review"
+                elif es in ("done","in_progress"):  status = "In Progress"
+                elif devs > 0:                      status = "In Progress"
+                else:                               status = "New"
+
+                # Deadline
+                dl_days = None
+                if bd:
+                    try: dl_days = (date.fromisoformat(str(bd))-today).days
+                    except: pass
+
+                rows.append({
+                    "id":       i+1,
+                    "name":     pname,
+                    "p":        p,
+                    "pct":      pct,
+                    "status":   status,
+                    "devs":     devs,
+                    "disc":     disc,
+                    "bd":       bd,
+                    "dl_days":  dl_days,
+                })
+
+            # Filter
+            if search:
+                rows = [r for r in rows
+                        if search.lower() in r["name"].lower()]
+            if filt_st != "All":
+                rows = [r for r in rows if r["status"] == filt_st]
+
+            # Sort
+            if sort_by == "Bid date":
+                rows.sort(key=lambda r: (r["dl_days"] is None,
+                                          r["dl_days"] or 9999))
+            elif sort_by == "Name":
+                rows.sort(key=lambda r: r["name"].lower())
+            elif sort_by == "% Complete":
+                rows.sort(key=lambda r: -r["pct"])
+            elif sort_by == "Status":
+                order = {"Review":0,"In Progress":1,"New":2,"Complete":3}
+                rows.sort(key=lambda r: order.get(r["status"],9))
+
+            # ── Table header ──────────────────────────────────────────
+            st.markdown("")
+            hdr = st.columns([0.4,3,0.5,1.2,0.7,0.7,1,0.8])
+            for c,h in zip(hdr,["ID","Project Name","%","Status",
+                                  "Devices","Disc.","Bid Date","Action"]):
+                c.markdown(f'<span style="font-size:11px;font-weight:600;'
+                           f'color:#64748b;text-transform:uppercase;'
+                           f'letter-spacing:.05em">{h}</span>',
+                           unsafe_allow_html=True)
+            st.markdown('<hr style="margin:4px 0 0;border-color:#e2e8f0">',
+                        unsafe_allow_html=True)
+
+            # ── Table rows ────────────────────────────────────────────
+            STATUS_CSS = {
+                "In Progress": "status-inprog",
+                "Complete":    "status-done",
+                "Review":      "status-review",
+                "New":         "status-new",
+            }
+            for r in rows:
+                pname  = r["name"]
+                status = r["status"]
+                disc   = r["disc"]
+                dl     = r["dl_days"]
+
+                # Deadline display
+                if dl is None:      dl_txt, dl_col = "—",        "#94a3b8"
+                elif dl < 0:        dl_txt, dl_col = "Past due",  "#94a3b8"
+                elif dl <= 14:      dl_txt, dl_col = f"{dl}d",    "#dc2626"
+                elif dl <= 30:      dl_txt, dl_col = f"{dl}d",    "#d97706"
+                else:               dl_txt, dl_col = str(r["bd"])[:10], "#64748b"
+
+                col = st.columns([0.4,3,0.5,1.2,0.7,0.7,1,0.8])
+                col[0].markdown(f'<span style="color:#94a3b8;font-size:12px">'
+                                f'#{r["id"]}</span>', unsafe_allow_html=True)
+                col[1].markdown(f'**{pname}**')
+                # % with mini bar
+                col[2].markdown(
+                    f'<div style="font-size:12px;font-weight:600">{r["pct"]}%</div>'
+                    f'<div class="pct-bar-track"><div class="pct-bar-fill"'
+                    f' style="width:{r["pct"]}%"></div></div>',
+                    unsafe_allow_html=True)
+                css = STATUS_CSS.get(status,"status-new")
+                col[3].markdown(
+                    f'<span class="status-badge {css}">{status}</span>',
+                    unsafe_allow_html=True)
+                col[4].markdown(str(r["devs"]))
+                col[5].markdown(
+                    f'<span style="color:{"#dc2626" if disc else "#94a3b8"};'
+                    f'font-weight:{"600" if disc else "400"}">'
+                    f'{disc if disc else "—"}</span>',
+                    unsafe_allow_html=True)
+                col[6].markdown(
+                    f'<span style="color:{dl_col};font-weight:500">'
+                    f'{dl_txt}</span>', unsafe_allow_html=True)
+
+                rc1,rc2,rc3 = col[7].columns(3)
+                if rc1.button("→", key=f"op_{pname}",
+                              help=f"Open {pname}"):
                     st.session_state.active_project = pname
                     st.session_state.active_module  = "Takeoff"
                     st.rerun()
-                if rb2.button("✏️", key=f"ed_{pname}", help="Edit project details"):
+                if rc2.button("✏", key=f"ed_{pname}",
+                              help="Edit"):
                     st.session_state.editing_project = pname
                     st.rerun()
-                if rb3.button("🗑", key=f"dl_{pname}", help="Delete project"):
-                    st.session_state[f"confirm_delete_{pname}"] = True
+                if rc3.button("🗑", key=f"dl_{pname}",
+                              help="Delete"):
+                    st.session_state[f"confirm_del_{pname}"] = True
                     st.rerun()
 
                 # Confirm delete
-                if st.session_state.get(f"confirm_delete_{pname}"):
+                if st.session_state.get(f"confirm_del_{pname}"):
                     st.warning(f"Delete **{pname}**? This cannot be undone.")
                     cc1,cc2 = st.columns(2)
-                    if cc1.button("Yes, delete", key=f"yes_del_{pname}", type="primary"):
+                    if cc1.button("Yes, delete", key=f"yes_{pname}",
+                                  type="primary"):
                         del projects[pname]
-                        st.session_state.pop(f"confirm_delete_{pname}", None)
+                        st.session_state.pop(f"confirm_del_{pname}", None)
                         if st.session_state.active_project == pname:
                             st.session_state.active_project = None
                         _save_app_state()
                         st.rerun()
-                    if cc2.button("Cancel", key=f"no_del_{pname}"):
-                        st.session_state.pop(f"confirm_delete_{pname}", None)
+                    if cc2.button("Cancel", key=f"no_{pname}"):
+                        st.session_state.pop(f"confirm_del_{pname}", None)
                         st.rerun()
 
+                # Inline edit form
+                if st.session_state.get("editing_project") == pname:
+                    with st.form(f"edit_{pname}"):
+                        ec1,ec2,ec3,ec4 = st.columns(4)
+                        new_name = ec1.text_input("Name", value=pname)
+                        new_addr = ec2.text_input("Address",
+                                                   value=r["p"].get("address",""))
+                        cur_bid  = None
+                        try:
+                            cur_bid = date.fromisoformat(str(r["p"].get("bid_date","")))                                       if r["p"].get("bid_date") else None
+                        except: pass
+                        new_bid  = ec3.date_input("Bid date", value=cur_bid)
+                        tmpl_opts2 = ["No template"] + list(
+                            st.session_state.get("templates",{}).keys())
+                        new_tmpl = ec4.selectbox("Template", tmpl_opts2,
+                                                  key=f"et_{pname}")
+                        s1,s2 = st.columns(2)
+                        if s1.form_submit_button("Save", type="primary"):
+                            p2 = projects.get(pname, r["p"])
+                            if new_name and new_name != pname:
+                                projects[new_name] = projects.pop(pname)
+                                pname = new_name
+                                p2    = projects[pname]
+                            p2["address"]  = new_addr
+                            p2["bid_date"] = str(new_bid) if new_bid else None
+                            tmpl2 = st.session_state.get("templates",{}).get(new_tmpl,{})
+                            if tmpl2.get("rates"):
+                                p2["estimate"]["rates"] = dict(tmpl2["rates"])
+                            st.session_state.editing_project = None
+                            _save_app_state()
+                            st.rerun()
+                        if s2.form_submit_button("Cancel"):
+                            st.session_state.editing_project = None
+                            st.rerun()
+
+                st.markdown('<hr style="margin:2px 0;border-color:#f1f5f9">',
+                            unsafe_allow_html=True)
+
+            st.caption(f"Total: {len(rows)} project{'s' if len(rows)!=1 else ''}")
+
+    # ════════════════════════════════════════════════════════════════════
+    # TAB 2: Templates
+    # ════════════════════════════════════════════════════════════════════
+    with tab_tmpl:
+        st.markdown("**Project templates** — save your rates and document formats "
+                    "for quick reuse across projects.")
+
+        if "templates" not in st.session_state:
+            st.session_state.templates = {}
+        tmpls = st.session_state.templates
+
+        tc1, tc2 = st.columns([1, 1.6])
+
+        with tc1:
+            st.markdown("**Saved templates**")
+            if not tmpls:
+                st.info("No templates yet. Create one →")
+            for tname, t in list(tmpls.items()):
+                with st.container(border=True):
+                    st.markdown(f"**{tname}**")
+                    rates = t.get("rates", DEFAULT_RATES)
+                    st.caption("Rates: " + "  ·  ".join(
+                        f"{k}: ${v}/hr" for k,v in rates.items()))
+                    st.caption(
+                        f"Point list: `{t.get('pl_template_name','—')}`  "
+                        f"Proposal: `{t.get('prop_template_name','—')}`")
+                    proj_using = [pn for pn,p in projects.items()
+                                  if p.get("_template") == tname]
+                    if proj_using:
+                        st.caption(f"Used by: {', '.join(proj_using)}")
+                    if st.button("Delete", key=f"del_tmpl_{tname}"):
+                        del st.session_state.templates[tname]
+                        st.rerun()
+
+        with tc2:
+            st.markdown("**Create template**")
+            with st.form("tmpl_form", clear_on_submit=True):
+                tname = st.text_input("Template name *",
+                                       placeholder="e.g. Standard NYC Commercial")
+
+                st.markdown("**Point list template** (.xlsx)")
+                pl_f = st.file_uploader("Upload Excel template",
+                                         type=["xlsx"], key="tmpl_pl")
+                st.caption("AI matches your column headers exactly")
+
+                st.markdown("**Proposal template** (.docx)")
+                prop_f = st.file_uploader("Upload Word template",
+                                           type=["docx"], key="tmpl_prop")
+                st.caption("Placeholders: {{PROJECT_NAME}} {{DATE}} {{SCOPE_TEXT}}")
+
+                st.markdown("**Default labor rates ($/hr)**")
+                rc = st.columns(len(PHASES))
+                rates = {}
+                for i,ph in enumerate(PHASES):
+                    rates[ph] = rc[i].number_input(
+                        ph, 0, 500, DEFAULT_RATES[ph], key=f"tr_{ph}")
+
+                if st.form_submit_button("Save template", type="primary"):
+                    if not tname:
+                        st.error("Template name required.")
+                    else:
+                        entry = {"rates": rates}
+                        if pl_f:
+                            entry["pl_template_bytes"] = pl_f.read()
+                            entry["pl_template_name"]  = pl_f.name
+                        if prop_f:
+                            entry["prop_template_bytes"] = prop_f.read()
+                            entry["prop_template_name"]  = prop_f.name
+                        st.session_state.templates[tname] = entry
+                        st.success(f"✅ Template '{tname}' saved.")
+                        st.rerun()
 def page_project_detail(p):
     bc, hc = st.columns([1, 8])
     if bc.button("← Back"):
