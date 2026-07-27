@@ -202,29 +202,93 @@ def sidebar():
         st.markdown("## 🏗 BMS Estimator")
         st.caption(f"FY {date.today().year}")
         st.divider()
-        for label in ["Overview","Projects","Reports"]:
-            active = st.session_state.nav == label
+
+        # ── Top nav ───────────────────────────────────────────────────
+        for label in ["Overview", "Projects", "Reports"]:
+            active = (st.session_state.nav == label and
+                      (label != "Projects" or not st.session_state.active_project))
             if st.button(label, key=f"nav_{label}",
                          type="primary" if active else "secondary",
                          use_container_width=True):
                 st.session_state.nav = label
-                if label != "Projects": st.session_state.active_project = None
+                if label != "Projects":
+                    st.session_state.active_project = None
+                else:
+                    st.session_state.active_project = None
                 st.rerun()
+
+        # ── Project sub-branches ──────────────────────────────────────
         if st.session_state.projects:
             st.divider()
-            st.markdown('<p class="block-label">Projects</p>', unsafe_allow_html=True)
-            for pname,p in st.session_state.projects.items():
-                disc = len(p["takeoff"].get("discrepancies",[]))
-                lbl = f"{'▶ ' if st.session_state.active_project==pname else ''}{pname}"
-                if st.button(lbl, key=f"sb_{pname}", use_container_width=True):
+
+            MODULES_NAV = [
+                ("📐", "Takeoff"),
+                ("📋", "Point List"),
+                ("💰", "Estimate"),
+                ("📄", "Proposal"),
+                ("🖊",  "Drawing Markup"),
+                ("🤖", "AI Advisor"),
+            ]
+
+            for pname, p in st.session_state.projects.items():
+                disc     = len(p["takeoff"].get("discrepancies", []))
+                is_open  = st.session_state.active_project == pname
+                proj_label = f"▶ {pname}" if is_open else pname
+
+                # Project name button
+                if st.button(proj_label,
+                             key=f"sb_proj_{pname}",
+                             use_container_width=True,
+                             type="primary" if is_open else "secondary"):
                     st.session_state.active_project = pname
-                    st.session_state.nav = "Projects"
-                    st.session_state.active_module = "Takeoff"
+                    st.session_state.active_module  = "Takeoff"
+                    st.session_state.nav            = "Projects"
                     st.rerun()
-                if disc: st.caption(f"  ⚠️ {disc} discrepancies")
+
+                # Sub-tasks — only show when project is open
+                if is_open:
+                    for icon, mod in MODULES_NAV:
+                        is_active_mod = st.session_state.active_module == mod
+
+                        # Status indicator
+                        s = p.get(mod.lower().replace(" ","_"), {})
+                        if isinstance(s, dict):
+                            status = s.get("status", "not_started")
+                        else:
+                            status = "not_started"
+                        dot = ("🟢" if status == "done" else
+                               "🟡" if status == "in_progress" else
+                               "🔴" if (mod == "Takeoff" and disc) else "⚪")
+
+                        # Indent + style
+                        btn_label = f"  {icon} {mod}"
+                        btn_style = "primary" if is_active_mod else "secondary"
+
+                        # Use markdown for indented look
+                        col_indent, col_btn = st.columns([0.12, 0.88])
+                        col_indent.markdown(
+                            f'<div style="text-align:right;padding-top:6px;'
+                            f'font-size:9px;color:#cbd5e1">{"│"}</div>',
+                            unsafe_allow_html=True)
+                        if col_btn.button(
+                            f"{dot} {mod}",
+                            key=f"sb_mod_{pname}_{mod}",
+                            use_container_width=True,
+                            type=btn_style
+                        ):
+                            st.session_state.active_project = pname
+                            st.session_state.active_module  = mod
+                            st.session_state.nav            = "Projects"
+                            st.rerun()
+
+                    if disc:
+                        st.caption(f"    ⚠️ {disc} discrepancies")
+
+                st.markdown("")  # spacing between projects
+
         st.divider()
         k = st.text_input("Anthropic API key", type="password",
-                          value=os.environ.get("ANTHROPIC_API_KEY",""),
+                          value=os.environ.get("ANTHROPIC_API_KEY", ""),
                           key="api_key_input")
         if k: st.session_state["anthropic_api_key"] = k
 
@@ -825,36 +889,48 @@ def page_projects_list():
                         st.rerun()
 
 def page_project_detail(p):
-    bc,hc = st.columns([1,8])
+    bc, hc = st.columns([1, 8])
     if bc.button("← Back"):
         st.session_state.active_project = None
         st.rerun()
     hc.markdown(f"## {p['name']}")
-    hc.caption(f"{p.get('address','—')} · Client: {p.get('client','—')} · Bid: {p.get('bid_date','TBD')}")
+    hc.caption(
+        f"{p.get('address','—')} · "
+        f"Bid: {p.get('bid_date','TBD')}"
+        + (f" · Client: {p.get('client')}" if p.get('client') else "")
+    )
 
-    # Build tab labels — all open, warn when data is partial
+    # All modules in order
+    all_mods = MODULE_ORDER + ["AI Advisor", "Drawing Markup"]
+
+    # Build tab labels
     tab_labels = []
-    for mod in MODULE_ORDER + ["AI Advisor"]:
+    for mod in all_mods:
         if mod == "AI Advisor":
             tab_labels.append("🤖 AI Advisor")
+        elif mod == "Drawing Markup":
+            tab_labels.append("🖊 Drawing Markup")
         elif module_locked(p, mod):
             tab_labels.append(f"🔒 {mod}")
         else:
-            s = module_status(p, mod)
-            warn = module_data_warning(p, mod)
-            icon = "✅" if s=="done" else "⚠️" if s=="issues" else ("📋" if not warn else "📋")
+            s    = module_status(p, mod)
+            icon = "✅" if s == "done" else "⚠️" if s == "issues" else "📋"
             tab_labels.append(f"{icon} {mod}")
-    tab_labels.append("🖊 Drawing Markup")
+
+    # Determine which tab to show based on sidebar click
+    active_mod = st.session_state.get("active_module", "Takeoff")
+    try:
+        default_tab = all_mods.index(active_mod)
+    except ValueError:
+        default_tab = 0
 
     tabs = st.tabs(tab_labels)
     handlers = [module_takeoff, module_point_list, module_estimate,
                 module_proposal, module_ai_advisor, module_markup]
-    all_mods = MODULE_ORDER + ["AI Advisor", "Drawing Markup"]
 
-    for tab, mod, handler in zip(tabs, all_mods, handlers):
+    for i, (tab, mod, handler) in enumerate(zip(tabs, all_mods, handlers)):
         with tab:
             if mod not in ("AI Advisor", "Drawing Markup") and module_locked(p, mod):
-                # Show what to upload to unlock
                 unlock_msg = {
                     "Point List": "Upload SOO or Controls spec in the Takeoff tab to unlock.",
                     "Estimate":   "Generate a point list or upload Controls spec to unlock.",
@@ -862,7 +938,6 @@ def page_project_detail(p):
                 }.get(mod, "Complete previous steps to unlock.")
                 st.info(f"🔒 **{mod} is locked.** {unlock_msg}")
             else:
-                # Show partial data warning if applicable
                 warn = module_data_warning(p, mod)
                 if warn and mod not in ("AI Advisor", "Drawing Markup", "Takeoff"):
                     st.warning(warn)
