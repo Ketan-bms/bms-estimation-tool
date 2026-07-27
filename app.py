@@ -123,10 +123,20 @@ def init():
         _load_app_state()
         st.session_state["storage_loaded"] = True
 
+PROJECT_STATUSES = ["Active","In Progress","On Hold","Completed","Archived"]
+PROJECT_STATUS_CSS = {
+    "Active":      ("background:#dbeafe;color:#1e40af",   "🔵"),
+    "In Progress": ("background:#fef9c3;color:#854d0e",   "🟡"),
+    "On Hold":     ("background:#fed7aa;color:#9a3412",   "🟠"),
+    "Completed":   ("background:#dcfce7;color:#166534",   "🟢"),
+    "Archived":    ("background:#f1f5f9;color:#475569",   "⚫"),
+}
+
 def new_project(name, client, bid_date, address):
     return {
         "name":name,"client":client,"bid_date":bid_date,
         "address":address,"created":str(date.today()),
+        "project_status": "Active",
         "docs":{},"doc_names":{},
         "takeoff":{"equipment":[],"discrepancies":[],"status":"not_started"},
         "point_list":{"rows":[],"status":"not_started"},
@@ -514,10 +524,11 @@ def page_overview():
                 if bd:
                     try:
                         days = (date.fromisoformat(str(bd)) - today).days
-                        if days < 0:   dl_icon, dl_txt = "⚪", "Past due"
-                        elif days<=14: dl_icon, dl_txt = "🔴", f"{days}d to bid"
-                        elif days<=30: dl_icon, dl_txt = "🟡", f"{days}d to bid"
-                        else:          dl_icon, dl_txt = "🟢", str(bd)[:10]
+                        bd_fmt = date.fromisoformat(str(bd)).strftime("%b %d, %Y")
+                        if days < 0:   dl_icon, dl_txt = "⚪", f"Past due · {bd_fmt}"
+                        elif days<=14: dl_icon, dl_txt = "🔴", f"{bd_fmt}"
+                        elif days<=30: dl_icon, dl_txt = "🟡", f"{bd_fmt}"
+                        else:          dl_icon, dl_txt = "🟢", f"{bd_fmt}"
                     except:
                         dl_txt = str(bd)[:10]
 
@@ -529,7 +540,9 @@ def page_overview():
                         tc2.markdown(f"{dl_icon} {dl_txt}")
 
                     # Info row
-                    meta_parts = []
+                    proj_st = p.get("project_status","Active")
+                    _, st_emoji = PROJECT_STATUS_CSS.get(proj_st,("","🔵"))
+                    meta_parts = [f"{st_emoji} {proj_st}"]
                     if devs:  meta_parts.append(f"📐 {devs} devices")
                     if disc:  meta_parts.append(f"⚠️ {disc} discrepancies")
                     meta_parts.append(f"{done_n}/{len(MODULE_ORDER)} modules")
@@ -575,14 +588,18 @@ def page_overview():
             st.caption("No deadlines set.")
         else:
             for days, pname, bd in dls[:7]:
+                try:
+                    bd_fmt = date.fromisoformat(str(bd)).strftime("%b %d, %Y")
+                except:
+                    bd_fmt = str(bd)[:10]
                 if days < 0:
-                    color, txt = "#94a3b8", "Past due"
+                    color, txt = "#94a3b8", f"Past due · {bd_fmt}"
                 elif days <= 14:
-                    color, txt = "#dc2626", f"{days} days"
+                    color, txt = "#dc2626", bd_fmt
                 elif days <= 30:
-                    color, txt = "#d97706", f"{days} days"
+                    color, txt = "#d97706", bd_fmt
                 else:
-                    color, txt = "#16a34a", f"{days} days"
+                    color, txt = "#16a34a", bd_fmt
                 st.markdown(f"""
                 <div class="dl-row">
                     <span style="font-weight:500">{pname}</span>
@@ -864,7 +881,7 @@ def page_projects_list():
                                       ["Bid date","Name","% Complete","Status"],
                                       label_visibility="collapsed", key="pl_sort")
             filt_st  = fc3.selectbox("Status",
-                                      ["All","In Progress","Review","Complete","New"],
+                                      ["All"] + PROJECT_STATUSES,
                                       label_visibility="collapsed", key="pl_filt")
 
             # ── Build rows ────────────────────────────────────────────
@@ -877,14 +894,8 @@ def page_projects_list():
                             if module_status(p,m) in ("done","in_progress"))
                 pct   = int(done_n/len(MODULE_ORDER)*100)
 
-                # Status
-                ps = module_status(p,"Proposal")
-                es = module_status(p,"Estimate")
-                if ps == "done":                    status = "Complete"
-                elif disc:                          status = "Review"
-                elif es in ("done","in_progress"):  status = "In Progress"
-                elif devs > 0:                      status = "In Progress"
-                else:                               status = "New"
+                # Status — use manual project_status, default to Active
+                status = p.get("project_status", "Active")
 
                 # Deadline
                 dl_days = None
@@ -920,7 +931,8 @@ def page_projects_list():
             elif sort_by == "% Complete":
                 rows.sort(key=lambda r: -r["pct"])
             elif sort_by == "Status":
-                order = {"Review":0,"In Progress":1,"New":2,"Complete":3}
+                order = {"In Progress":0,"Active":1,"On Hold":2,
+                         "Completed":3,"Archived":4}
                 rows.sort(key=lambda r: order.get(r["status"],9))
 
             # ── Table header ──────────────────────────────────────────
@@ -949,11 +961,17 @@ def page_projects_list():
                 dl     = r["dl_days"]
 
                 # Deadline display
-                if dl is None:      dl_txt, dl_col = "—",        "#94a3b8"
-                elif dl < 0:        dl_txt, dl_col = "Past due",  "#94a3b8"
-                elif dl <= 14:      dl_txt, dl_col = f"{dl}d",    "#dc2626"
-                elif dl <= 30:      dl_txt, dl_col = f"{dl}d",    "#d97706"
-                else:               dl_txt, dl_col = str(r["bd"])[:10], "#64748b"
+                if dl is None:
+                    dl_txt, dl_col = "—", "#94a3b8"
+                else:
+                    try:
+                        bd_fmt = date.fromisoformat(str(r["bd"])).strftime("%b %d, %Y")
+                    except:
+                        bd_fmt = str(r["bd"])[:10]
+                    if dl < 0:      dl_txt, dl_col = f"Past due · {bd_fmt}", "#94a3b8"
+                    elif dl <= 14:  dl_txt, dl_col = bd_fmt, "#dc2626"
+                    elif dl <= 30:  dl_txt, dl_col = bd_fmt, "#d97706"
+                    else:           dl_txt, dl_col = bd_fmt, "#64748b"
 
                 col = st.columns([0.4,3,0.5,1.2,0.7,0.7,1,0.8])
                 col[0].markdown(f'<span style="color:#94a3b8;font-size:12px">'
@@ -971,10 +989,20 @@ def page_projects_list():
                     f'<div class="pct-bar-track"><div class="pct-bar-fill"'
                     f' style="width:{r["pct"]}%"></div></div>',
                     unsafe_allow_html=True)
-                css = STATUS_CSS.get(status,"status-new")
-                col[3].markdown(
-                    f'<span class="status-badge {css}">{status}</span>',
-                    unsafe_allow_html=True)
+                # Editable status dropdown inline
+                css_style, emoji = PROJECT_STATUS_CSS.get(
+                    status, ("background:#f1f5f9;color:#475569", "🔵"))
+                new_status = col[3].selectbox(
+                    "Status", PROJECT_STATUSES,
+                    index=PROJECT_STATUSES.index(status)
+                          if status in PROJECT_STATUSES else 0,
+                    key=f"ps_{pname}",
+                    label_visibility="collapsed"
+                )
+                if new_status != status:
+                    p["project_status"] = new_status
+                    _save_app_state()
+                    st.rerun()
                 col[4].markdown(str(r["devs"]))
                 col[5].markdown(
                     f'<span style="color:{"#dc2626" if disc else "#94a3b8"};'
@@ -1133,11 +1161,25 @@ def page_project_detail(p):
         st.session_state.active_project = None
         st.rerun()
     hc.markdown(f"## {p['name']}")
+    proj_st = p.get("project_status","Active")
+    _, st_emoji = PROJECT_STATUS_CSS.get(proj_st,("","🔵"))
     hc.caption(
-        f"{p.get('address','—')} · "
-        f"Bid: {p.get('bid_date','TBD')}"
-        + (f" · Client: {p.get('client')}" if p.get('client') else "")
+        f"{st_emoji} {proj_st}"
+        + (f"  ·  {p.get('address')}" if p.get('address') else "")
+        + f"  ·  Bid: {p.get('bid_date','TBD')}"
+        + (f"  ·  {p.get('client')}" if p.get('client') else "")
     )
+    # Quick status change in project header
+    hdr_st = hc.selectbox("Project status", PROJECT_STATUSES,
+                           index=PROJECT_STATUSES.index(proj_st)
+                                 if proj_st in PROJECT_STATUSES else 0,
+                           key=f"hdr_status_{p['name']}",
+                           label_visibility="collapsed",
+                           help="Change project status")
+    if hdr_st != proj_st:
+        p["project_status"] = hdr_st
+        _save_app_state()
+        st.rerun()
 
     # All modules in order
     all_mods = MODULE_ORDER + ["AI Advisor", "Drawing Markup"]
