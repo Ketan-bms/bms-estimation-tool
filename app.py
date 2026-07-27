@@ -319,9 +319,8 @@ def sidebar():
                 is_open = st.session_state.active_project == pname
                 disc    = len(p["takeoff"].get("discrepancies", []))
 
-                # Project row
-                proj_icon = "▾" if is_open else "▸"
-                if st.button(f"{proj_icon}  {pname}",
+                # Project row — clean link, no dropdown arrow
+                if st.button(f"📁  {pname}" if not is_open else f"📂  {pname}",
                              key=f"sb_proj_{pname}",
                              use_container_width=True):
                     st.session_state.active_project = pname
@@ -543,69 +542,61 @@ def page_overview():
                 disc  = len(p["takeoff"].get("discrepancies", []))
                 devs  = len(p["takeoff"].get("equipment", []))
                 bd    = p.get("bid_date", "")
-                cli   = p.get("client") or "—"
 
                 # Progress
                 done_n = sum(1 for m in MODULE_ORDER
                              if module_status(p,m) in ("done","in_progress"))
                 pct    = int(done_n / len(MODULE_ORDER) * 100)
 
-                # Deadline badge
-                dl_html = ""
+                # Deadline text
+                dl_txt  = ""
+                dl_icon = ""
                 if bd:
                     try:
                         days = (date.fromisoformat(str(bd)) - today).days
-                        if days < 0:
-                            dl_html = f'<span style="color:#94a3b8">Past due</span>'
-                        elif days <= 14:
-                            dl_html = f'<span style="color:#dc2626;font-weight:600">🔴 {days}d</span>'
-                        elif days <= 30:
-                            dl_html = f'<span style="color:#d97706;font-weight:600">🟡 {days}d</span>'
-                        else:
-                            dl_html = f'<span style="color:#16a34a">🟢 {days}d</span>'
+                        if days < 0:   dl_icon, dl_txt = "⚪", "Past due"
+                        elif days<=14: dl_icon, dl_txt = "🔴", f"{days}d to bid"
+                        elif days<=30: dl_icon, dl_txt = "🟡", f"{days}d to bid"
+                        else:          dl_icon, dl_txt = "🟢", str(bd)[:10]
                     except:
-                        dl_html = f"📅 {bd}"
+                        dl_txt = str(bd)[:10]
 
-                # Stage pills
-                pills = ""
-                for mod in MODULE_ORDER:
-                    s = module_status(p, mod)
-                    if s == "done":
-                        pills += f'<span class="pill pill-done">✓ {mod}</span>'
-                    elif s == "in_progress":
-                        pills += f'<span class="pill pill-prog">{mod}</span>'
-                    elif mod == "Takeoff" and disc:
-                        pills += f'<span class="pill pill-warn">⚠ {disc} disc.</span>'
-                    else:
-                        pills += f'<span class="pill pill-empty">{mod}</span>'
+                with st.container(border=True):
+                    # Title row
+                    tc1, tc2 = st.columns([3,1])
+                    tc1.markdown(f"**{pname}**")
+                    if dl_txt:
+                        tc2.markdown(f"{dl_icon} {dl_txt}")
 
-                st.markdown(f"""
-                <div class="pcard">
-                    <div style="display:flex;justify-content:space-between;align-items:start">
-                        <div>
-                            <div class="pcard-name">{pname}</div>
-                            <div class="pcard-meta">
-                                {cli}
-                                {"&nbsp;·&nbsp;" + str(devs) + " devices" if devs else ""}
-                                {"&nbsp;·&nbsp;" + dl_html if dl_html else ""}
-                            </div>
-                        </div>
-                    </div>
-                    <div style="margin-bottom:8px">{pills}</div>
-                    <div class="pbar-track">
-                        <div class="pbar-fill" style="width:{pct}%"></div>
-                    </div>
-                    <div style="font-size:11px;color:#94a3b8">
-                        {done_n}/{len(MODULE_ORDER)} modules complete
-                    </div>
-                </div>""", unsafe_allow_html=True)
+                    # Info row
+                    meta_parts = []
+                    if devs:  meta_parts.append(f"📐 {devs} devices")
+                    if disc:  meta_parts.append(f"⚠️ {disc} discrepancies")
+                    meta_parts.append(f"{done_n}/{len(MODULE_ORDER)} modules")
+                    st.caption("  ·  ".join(meta_parts))
 
-                if st.button(f"Open {pname} →", key=f"ov_op_{pname}",
-                             use_container_width=True):
-                    st.session_state.active_project = pname
-                    st.session_state.active_module  = "Takeoff"
-                    st.session_state.nav            = "Projects"
-                    st.rerun()
+                    # Module status pills using Streamlit columns
+                    mc = st.columns(len(MODULE_ORDER))
+                    for i, mod in enumerate(MODULE_ORDER):
+                        s = module_status(p, mod)
+                        if s == "done":
+                            mc[i].success(mod, icon="✅")
+                        elif s == "in_progress":
+                            mc[i].info(mod, icon="🔄")
+                        elif mod == "Takeoff" and disc:
+                            mc[i].warning(f"⚠", icon=None)
+                        else:
+                            mc[i].caption(mod)
+
+                    # Progress bar
+                    st.progress(pct/100, text=f"{pct}% complete")
+
+                    if st.button(f"Open {pname} →", key=f"ov_op_{pname}",
+                                 use_container_width=True, type="primary"):
+                        st.session_state.active_project = pname
+                        st.session_state.active_module  = "Takeoff"
+                        st.session_state.nav            = "Projects"
+                        st.rerun()
 
     with col_right:
         # ── Upcoming deadlines ────────────────────────────────────────────
