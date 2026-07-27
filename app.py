@@ -549,9 +549,10 @@ def page_overview():
 
                     # Info row
                     proj_st = p.get("project_status","Active")
-                    meta_parts = []
-                    tc1.markdown(status_badge_html(proj_st),
-                                 unsafe_allow_html=True)
+                    st_emoji = {"Active":"🔵","In Progress":"🟡",
+                                "On Hold":"🟠","Completed":"🟢",
+                                "Archived":"⚫"}.get(proj_st,"🔵")
+                    meta_parts = [f"{st_emoji} {proj_st}"]
                     if devs:  meta_parts.append(f"📐 {devs} devices")
                     if disc:  meta_parts.append(f"⚠️ {disc} discrepancies")
                     meta_parts.append(f"{done_n}/{len(MODULE_ORDER)} modules")
@@ -1000,15 +1001,20 @@ def page_projects_list():
                     f'<div class="pct-bar-track"><div class="pct-bar-fill"'
                     f' style="width:{r["pct"]}%"></div></div>',
                     unsafe_allow_html=True)
-                # Colored badge + inline dropdown
-                col[3].markdown(status_badge_html(status),
-                                unsafe_allow_html=True)
+                # Single styled dropdown — no badge above
                 new_status = col[3].selectbox(
                     "Status", PROJECT_STATUSES,
                     index=PROJECT_STATUSES.index(status)
                           if status in PROJECT_STATUSES else 0,
                     key=f"ps_{pname}",
-                    label_visibility="collapsed"
+                    label_visibility="collapsed",
+                    format_func=lambda s: {
+                        "Active":      "🔵 Active",
+                        "In Progress": "🟡 In Progress",
+                        "On Hold":     "🟠 On Hold",
+                        "Completed":   "🟢 Completed",
+                        "Archived":    "⚫ Archived",
+                    }.get(s, s)
                 )
                 if new_status != status:
                     p["project_status"] = new_status
@@ -1173,20 +1179,27 @@ def page_project_detail(p):
         st.rerun()
     hc.markdown(f"## {p['name']}")
     proj_st = p.get("project_status","Active")
-    # Colored badge in header
-    hc.markdown(status_badge_html(proj_st), unsafe_allow_html=True)
     hc.caption(
         (f"{p.get('address')}  ·  " if p.get('address') else "")
         + f"Bid: {p.get('bid_date','TBD')}"
         + (f"  ·  {p.get('client')}" if p.get('client') else "")
     )
-    # Quick status change dropdown
-    hdr_st = hc.selectbox("Change status", PROJECT_STATUSES,
-                           index=PROJECT_STATUSES.index(proj_st)
-                                 if proj_st in PROJECT_STATUSES else 0,
-                           key=f"hdr_status_{p['name']}",
-                           label_visibility="collapsed",
-                           help="Change project status")
+    # Single status dropdown in header
+    hdr_st = hc.selectbox(
+        "Status", PROJECT_STATUSES,
+        index=PROJECT_STATUSES.index(proj_st)
+              if proj_st in PROJECT_STATUSES else 0,
+        key=f"hdr_status_{p['name']}",
+        label_visibility="collapsed",
+        help="Change project status",
+        format_func=lambda s: {
+            "Active":      "🔵 Active",
+            "In Progress": "🟡 In Progress",
+            "On Hold":     "🟠 On Hold",
+            "Completed":   "🟢 Completed",
+            "Archived":    "⚫ Archived",
+        }.get(s, s)
+    )
     if hdr_st != proj_st:
         p["project_status"] = hdr_st
         _save_app_state()
