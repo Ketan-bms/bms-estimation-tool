@@ -230,14 +230,77 @@ def sidebar():
 
 # ── Overview ──────────────────────────────────────────────────────────────────
 def page_overview():
-    st.title("Overview")
-    today = date.today()
+    today    = date.today()
     projects = st.session_state.projects
 
-    total_dev  = sum(len(p["takeoff"].get("equipment",[])) for p in projects.values())
-    total_disc = sum(len(p["takeoff"].get("discrepancies",[])) for p in projects.values())
-    est_ready  = sum(1 for p in projects.values() if module_status(p,"Estimate")=="done")
+    # ── CSS for dashboard cards ───────────────────────────────────────────
+    st.markdown("""
+    <style>
+    .kpi-card {
+        background:#fff;border:1px solid #e2e8f0;border-radius:12px;
+        padding:18px 20px;margin-bottom:8px;
+    }
+    .kpi-icon  {font-size:28px;margin-bottom:6px}
+    .kpi-val   {font-size:2rem;font-weight:700;line-height:1.1;color:#1e293b}
+    .kpi-label {font-size:12px;color:#64748b;font-weight:500;text-transform:uppercase;
+                letter-spacing:.05em;margin-top:4px}
+    .kpi-sub   {font-size:12px;color:#94a3b8;margin-top:2px}
+    .proj-card {
+        background:#fff;border:1px solid #e2e8f0;border-radius:12px;
+        padding:16px 18px;margin-bottom:10px;
+    }
+    .proj-name {font-size:15px;font-weight:600;color:#1e293b;margin-bottom:2px}
+    .proj-meta {font-size:12px;color:#64748b;margin-bottom:10px}
+    .stage-bar {height:6px;border-radius:3px;background:#f1f5f9;margin:8px 0 4px}
+    .stage-fill{height:6px;border-radius:3px}
+    .deadline-urgent{color:#dc2626;font-weight:600}
+    .deadline-soon  {color:#d97706;font-weight:500}
+    .deadline-ok    {color:#16a34a;font-weight:500}
+    .alert-card {
+        border-left:4px solid;border-radius:0 8px 8px 0;
+        padding:10px 14px;margin-bottom:8px;font-size:13px;
+    }
+    .alert-red  {border-color:#ef4444;background:#fef2f2;color:#7f1d1d}
+    .alert-amber{border-color:#f59e0b;background:#fffbeb;color:#78350f}
+    .alert-blue {border-color:#3b82f6;background:#eff6ff;color:#1e3a5f}
+    </style>
+    """, unsafe_allow_html=True)
 
+    # ── Header ────────────────────────────────────────────────────────────
+    hc1, hc2 = st.columns([3,1])
+    hc1.markdown(f"## BMS Estimator")
+    hc1.caption(f"TEC Building Systems · {today.strftime('%B %d, %Y')}")
+    if hc2.button("＋ New project", type="primary", use_container_width=True, key="ov_new"):
+        st.session_state.nav = "Projects"
+        st.session_state.active_project = None
+        st.rerun()
+
+    # ── Compute stats ─────────────────────────────────────────────────────
+    total_proj  = len(projects)
+    total_dev   = sum(len(p["takeoff"].get("equipment",[])) for p in projects.values())
+    total_disc  = sum(len(p["takeoff"].get("discrepancies",[])) for p in projects.values())
+    est_ready   = sum(1 for p in projects.values() if module_status(p,"Estimate")=="done")
+    prop_ready  = sum(1 for p in projects.values() if module_status(p,"Proposal")=="done")
+
+    # Pipeline stage counts
+    stages = {"Takeoff":0,"Point List":0,"Estimate":0,"Proposal":0}
+    for p in projects.values():
+        for mod in reversed(MODULE_ORDER):
+            if module_status(p,mod) in ("done","in_progress"):
+                stages[mod] += 1
+                break
+
+    # Estimate total value
+    total_value = 0
+    for p in projects.values():
+        try:
+            lines  = p["estimate"].get("lines",[])
+            markup = p["estimate"].get("markup",10)
+            sub    = sum(float(r.get("Total $",0)) for r in lines)
+            total_value += sub*(1+markup/100)
+        except: pass
+
+    # Nearest deadline
     nearest_days, nearest_name = None, None
     for pname,p in projects.items():
         bd = p.get("bid_date")
@@ -248,78 +311,205 @@ def page_overview():
                     nearest_days,nearest_name = d,pname
             except: pass
 
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Active projects",  len(projects))
-    c2.metric("Total devices",    total_dev)
-    c3.metric("Discrepancies",    total_disc,
-              delta=f"{total_disc} need resolution" if total_disc else None,
-              delta_color="inverse" if total_disc else "normal")
-    c4.metric("Estimates ready",  f"{est_ready} of {len(projects)}")
+    # ── KPI cards ─────────────────────────────────────────────────────────
+    k1,k2,k3,k4,k5 = st.columns(5)
+    kpis = [
+        (k1, "📁", str(total_proj),    "Active projects",
+         f"{stages.get('Proposal',0)} at proposal stage"),
+        (k2, "🔧", str(total_dev),     "Total devices",
+         f"across {total_proj} project{'s' if total_proj!=1 else ''}"),
+        (k3, "⚠️", str(total_disc),    "Discrepancies",
+         "need scope clarification" if total_disc else "none found"),
+        (k4, "💰", f"${total_value/1000:.0f}K" if total_value else "—",
+         "Pipeline value",
+         f"{est_ready} estimate{'s' if est_ready!=1 else ''} complete"),
+        (k5, "📅", f"{nearest_days}d" if nearest_days is not None else "—",
+         "Next bid deadline",
+         nearest_name or "no deadlines set"),
+    ]
+    for col, icon, val, label, sub in kpis:
+        col.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-icon">{icon}</div>
+            <div class="kpi-val">{val}</div>
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-sub">{sub}</div>
+        </div>""", unsafe_allow_html=True)
 
-    st.divider()
-    col_l, col_r = st.columns([1.6,1])
+    st.markdown("")
 
-    with col_l:
-        st.markdown("**Projects — pipeline**")
+    # ── Pipeline stage bar ────────────────────────────────────────────────
+    if projects:
+        st.markdown("**Pipeline overview**")
+        bar_cols = st.columns(4)
+        colors   = ["#6366f1","#3b82f6","#10b981","#f59e0b"]
+        for i,(mod,color) in enumerate(zip(MODULE_ORDER,colors)):
+            count = stages.get(mod,0)
+            pct   = int(count/total_proj*100) if total_proj else 0
+            bar_cols[i].markdown(f"""
+            <div style="text-align:center">
+                <div style="font-size:11px;color:#64748b;font-weight:500;
+                            text-transform:uppercase;letter-spacing:.05em">{mod}</div>
+                <div style="font-size:22px;font-weight:700;color:{color}">{count}</div>
+                <div class="stage-bar">
+                    <div class="stage-fill" style="width:{pct}%;background:{color}"></div>
+                </div>
+                <div style="font-size:11px;color:#94a3b8">{pct}% of projects</div>
+            </div>""", unsafe_allow_html=True)
+        st.markdown("")
+
+    # ── Main columns: project cards + right panel ─────────────────────────
+    col_main, col_right = st.columns([1.7, 1])
+
+    with col_main:
+        st.markdown("**Projects**")
         if not projects:
-            st.info("No projects yet. Go to Projects → New project.")
+            st.markdown("""
+            <div style="border:2px dashed #e2e8f0;border-radius:12px;padding:40px;
+                        text-align:center;color:#94a3b8">
+                <div style="font-size:32px;margin-bottom:12px">📋</div>
+                <div style="font-size:16px;font-weight:500;color:#64748b;margin-bottom:8px">
+                    No projects yet</div>
+                <div style="font-size:13px">Click <strong>＋ New project</strong> to get started</div>
+            </div>""", unsafe_allow_html=True)
         else:
-            # Header row
-            cols = st.columns([2,1,1,1,1,1,1])
-            for c,h in zip(cols,["Project","Devices","Takeoff","Point list","Estimate","Proposal","Bid"]):
-                c.markdown(f'<span style="font-size:11px;color:#64748b;font-weight:500">{h}</span>',
-                           unsafe_allow_html=True)
-            for pname,p in projects.items():
-                row = st.columns([2,1,1,1,1,1,1])
-                disc = len(p["takeoff"].get("discrepancies",[]))
-                devs = len(p["takeoff"].get("equipment",[]))
-                bd = str(p.get("bid_date","—"))[:10]
-                row[0].markdown(f"**{pname}**")
-                row[1].markdown(str(devs))
-                for i,mod in enumerate(MODULE_ORDER):
-                    s = module_status(p,mod)
-                    lbl = f"⚠️ {disc}" if mod=="Takeoff" and disc else ("Done" if s=="done" else ("In progress" if s=="in_progress" else "—"))
-                    row[2+i].markdown(chip("issues" if mod=="Takeoff" and disc else s, lbl),
-                                      unsafe_allow_html=True)
-                row[6].markdown(bd)
-            if st.button("+ New project", key="ov_new"):
-                st.session_state.nav = "Projects"
-                st.session_state.active_project = None
-                st.rerun()
+            for pname, p in projects.items():
+                disc  = len(p["takeoff"].get("discrepancies",[]))
+                devs  = len(p["takeoff"].get("equipment",[]))
+                bd    = p.get("bid_date","")
+                cli   = p.get("client","—")
 
-    with col_r:
-        st.markdown("**Bid deadlines**")
-        if not projects:
-            st.caption("No projects.")
-        else:
-            for pname,p in projects.items():
-                bd = p.get("bid_date")
+                # Progress: how many modules done
+                done_count = sum(1 for mod in MODULE_ORDER
+                                 if module_status(p,mod) in ("done","in_progress"))
+                pct = int(done_count / len(MODULE_ORDER) * 100)
+
+                # Deadline color
+                dl_html = ""
                 if bd:
                     try:
                         days = (date.fromisoformat(str(bd))-today).days
-                        icon = "🔴" if days<=30 else "🟡" if days<=60 else "🟢"
-                        st.markdown(f"{icon} **{pname}** — {days}d · {bd}")
-                    except: st.markdown(f"**{pname}** — {bd}")
-        st.divider()
+                        cls  = "deadline-urgent" if days<=14 else                                "deadline-soon"   if days<=30 else "deadline-ok"
+                        dl_html = f'<span class="{cls}">📅 {days}d · {bd}</span>'
+                    except:
+                        dl_html = f"📅 {bd}"
+
+                # Module status pills
+                pills = ""
+                for mod in MODULE_ORDER:
+                    s = module_status(p, mod)
+                    if s == "done":
+                        pills += f'<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 7px;border-radius:4px;margin-right:3px">{mod}</span>'
+                    elif s == "in_progress":
+                        pills += f'<span style="background:#dbeafe;color:#1e40af;font-size:10px;padding:2px 7px;border-radius:4px;margin-right:3px">{mod}</span>'
+                    elif mod == "Takeoff" and disc:
+                        pills += f'<span style="background:#fef9c3;color:#854d0e;font-size:10px;padding:2px 7px;border-radius:4px;margin-right:3px">⚠️ {disc} disc.</span>'
+                    else:
+                        pills += f'<span style="background:#f1f5f9;color:#94a3b8;font-size:10px;padding:2px 7px;border-radius:4px;margin-right:3px">{mod}</span>'
+
+                st.markdown(f"""
+                <div class="proj-card">
+                    <div class="proj-name">{pname}</div>
+                    <div class="proj-meta">
+                        {cli} &nbsp;·&nbsp; {devs} devices
+                        {"&nbsp;·&nbsp;" + dl_html if dl_html else ""}
+                    </div>
+                    <div style="margin-bottom:6px">{pills}</div>
+                    <div class="stage-bar">
+                        <div class="stage-fill"
+                             style="width:{pct}%;background:linear-gradient(90deg,#6366f1,#10b981)">
+                        </div>
+                    </div>
+                    <div style="font-size:11px;color:#94a3b8">{done_count}/{len(MODULE_ORDER)} modules complete</div>
+                </div>""", unsafe_allow_html=True)
+
+                if st.button(f"Open {pname} →", key=f"ov_open_{pname}",
+                             use_container_width=True):
+                    st.session_state.active_project  = pname
+                    st.session_state.active_module   = "Takeoff"
+                    st.session_state.nav             = "Projects"
+                    st.rerun()
+
+    with col_right:
+        # ── Upcoming deadlines ────────────────────────────────────────────
+        st.markdown("**Upcoming deadlines**")
+        deadline_projects = []
+        for pname,p in projects.items():
+            bd = p.get("bid_date")
+            if bd:
+                try:
+                    days = (date.fromisoformat(str(bd))-today).days
+                    deadline_projects.append((days, pname, bd))
+                except: pass
+        deadline_projects.sort()
+
+        if not deadline_projects:
+            st.caption("No deadlines set.")
+        else:
+            for days, pname, bd in deadline_projects[:6]:
+                if days < 0:
+                    color, label = "#94a3b8", f"Past due ({abs(days)}d ago)"
+                elif days <= 14:
+                    color, label = "#dc2626", f"{days} days"
+                elif days <= 30:
+                    color, label = "#d97706", f"{days} days"
+                else:
+                    color, label = "#16a34a", f"{days} days"
+                st.markdown(f"""
+                <div style="display:flex;justify-content:space-between;align-items:center;
+                            padding:8px 0;border-bottom:1px solid #f1f5f9">
+                    <span style="font-size:13px;font-weight:500">{pname}</span>
+                    <span style="font-size:12px;color:{color};font-weight:600">{label}</span>
+                </div>""", unsafe_allow_html=True)
+
+        # ── Needs attention ───────────────────────────────────────────────
+        st.markdown("")
         st.markdown("**Needs attention**")
-        any_alert = False
+        alerts = []
         for pname,p in projects.items():
             disc = p["takeoff"].get("discrepancies",[])
             if disc:
-                any_alert = True
-                st.warning(f"⚠️ **{pname}** — {len(disc)} discrepancies")
+                alerts.append(("red", f"<strong>{pname}</strong> — {len(disc)} discrepancies need resolution"))
             bd = p.get("bid_date")
-            if module_status(p,"Takeoff")!="not_started" and module_status(p,"Point List")=="not_started" and bd:
+            if bd:
                 try:
                     days = (date.fromisoformat(str(bd))-today).days
-                    if days<=45:
-                        any_alert = True
-                        st.info(f"⏰ **{pname}** — point list not started, {days}d to bid")
+                    if days<=30 and module_status(p,"Estimate")=="not_started":
+                        alerts.append(("amber", f"<strong>{pname}</strong> — no estimate, {days}d to bid"))
+                    if days<=14 and module_status(p,"Proposal")=="not_started":
+                        alerts.append(("red", f"<strong>{pname}</strong> — no proposal, {days}d to bid"))
                 except: pass
-        if not any_alert:
-            st.success("All clear — no blocking issues")
+            if (module_status(p,"Takeoff")=="not_started" and
+                (p["docs"].get("SOO") or p["docs"].get("Controls spec"))):
+                alerts.append(("blue", f"<strong>{pname}</strong> — SOO uploaded but takeoff not run"))
 
-    # ── Product status panel ─────────────────────────────────────────────────
+        if not alerts:
+            st.markdown("""
+            <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;
+                        padding:12px;text-align:center;color:#166534;font-size:13px">
+                ✅ All clear — no issues
+            </div>""", unsafe_allow_html=True)
+        else:
+            for color, msg in alerts[:6]:
+                css = {"red":"alert-red","amber":"alert-amber","blue":"alert-blue"}.get(color,"alert-blue")
+                st.markdown(f'<div class="alert-card {css}">{msg}</div>',
+                            unsafe_allow_html=True)
+
+        # ── Quick stats ───────────────────────────────────────────────────
+        if projects:
+            st.markdown("")
+            st.markdown("**Quick stats**")
+            stats = [
+                ("Proposals ready",   prop_ready),
+                ("Total discrepancies", total_disc),
+                ("Devices in scope",   total_dev),
+            ]
+            for label, val in stats:
+                sc1,sc2 = st.columns([2,1])
+                sc1.caption(label)
+                sc2.markdown(f"**{val}**")
+
+    # ── Product status panel ──────────────────────────────────────────────
     st.divider()
     with st.expander("🗺 Product status & roadmap"):
         _product_status_panel()
