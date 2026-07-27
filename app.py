@@ -233,287 +233,335 @@ def page_overview():
     today    = date.today()
     projects = st.session_state.projects
 
-    # ── CSS for dashboard cards ───────────────────────────────────────────
-    st.markdown("""
-    <style>
-    .kpi-card {
-        background:#fff;border:1px solid #e2e8f0;border-radius:12px;
-        padding:18px 20px;margin-bottom:8px;
-    }
-    .kpi-icon  {font-size:28px;margin-bottom:6px}
-    .kpi-val   {font-size:2rem;font-weight:700;line-height:1.1;color:#1e293b}
-    .kpi-label {font-size:12px;color:#64748b;font-weight:500;text-transform:uppercase;
-                letter-spacing:.05em;margin-top:4px}
-    .kpi-sub   {font-size:12px;color:#94a3b8;margin-top:2px}
-    .proj-card {
-        background:#fff;border:1px solid #e2e8f0;border-radius:12px;
-        padding:16px 18px;margin-bottom:10px;
-    }
-    .proj-name {font-size:15px;font-weight:600;color:#1e293b;margin-bottom:2px}
-    .proj-meta {font-size:12px;color:#64748b;margin-bottom:10px}
-    .stage-bar {height:6px;border-radius:3px;background:#f1f5f9;margin:8px 0 4px}
-    .stage-fill{height:6px;border-radius:3px}
-    .deadline-urgent{color:#dc2626;font-weight:600}
-    .deadline-soon  {color:#d97706;font-weight:500}
-    .deadline-ok    {color:#16a34a;font-weight:500}
-    .alert-card {
-        border-left:4px solid;border-radius:0 8px 8px 0;
-        padding:10px 14px;margin-bottom:8px;font-size:13px;
-    }
-    .alert-red  {border-color:#ef4444;background:#fef2f2;color:#7f1d1d}
-    .alert-amber{border-color:#f59e0b;background:#fffbeb;color:#78350f}
-    .alert-blue {border-color:#3b82f6;background:#eff6ff;color:#1e3a5f}
-    </style>
-    """, unsafe_allow_html=True)
+    # ── Styles ────────────────────────────────────────────────────────────
+    st.markdown("""<style>
+    .kpi { background:#fff; border:1px solid #e2e8f0; border-radius:12px;
+           padding:20px 18px; text-align:center; }
+    .kpi-icon  { font-size:24px; margin-bottom:6px; }
+    .kpi-val   { font-size:2rem; font-weight:700; color:#1e293b; line-height:1.1; }
+    .kpi-label { font-size:11px; font-weight:600; color:#64748b;
+                 text-transform:uppercase; letter-spacing:.06em; margin-top:6px; }
+    .kpi-sub   { font-size:11px; color:#94a3b8; margin-top:3px; }
+    .pcard { background:#fff; border:1px solid #e2e8f0; border-radius:12px;
+             padding:16px 18px; margin-bottom:10px; }
+    .pcard-name { font-size:15px; font-weight:600; color:#1e293b; }
+    .pcard-meta { font-size:12px; color:#64748b; margin:3px 0 10px; }
+    .pill { display:inline-block; font-size:10px; padding:2px 8px;
+            border-radius:4px; margin-right:4px; font-weight:500; }
+    .pill-done  { background:#dcfce7; color:#166534; }
+    .pill-prog  { background:#dbeafe; color:#1e40af; }
+    .pill-warn  { background:#fef9c3; color:#854d0e; }
+    .pill-empty { background:#f1f5f9; color:#94a3b8; }
+    .pbar-track { height:5px; border-radius:3px; background:#f1f5f9; margin:8px 0 4px; }
+    .pbar-fill  { height:5px; border-radius:3px;
+                  background:linear-gradient(90deg,#6366f1,#10b981); }
+    .alert { border-left:4px solid; border-radius:0 8px 8px 0;
+             padding:9px 13px; margin-bottom:7px; font-size:12px; }
+    .alert-red   { border-color:#ef4444; background:#fef2f2; color:#7f1d1d; }
+    .alert-amber { border-color:#f59e0b; background:#fffbeb; color:#78350f; }
+    .alert-blue  { border-color:#3b82f6; background:#eff6ff; color:#1e3a5f; }
+    .dl-row { display:flex; justify-content:space-between; align-items:center;
+              padding:8px 0; border-bottom:1px solid #f1f5f9; font-size:13px; }
+    .funnel-col { text-align:center; padding:12px 8px;
+                  border-radius:10px; margin:0 3px; }
+    </style>""", unsafe_allow_html=True)
 
     # ── Header ────────────────────────────────────────────────────────────
-    hc1, hc2 = st.columns([3,1])
-    hc1.markdown(f"## BMS Estimator")
-    hc1.caption(f"TEC Building Systems · {today.strftime('%B %d, %Y')}")
-    if hc2.button("＋ New project", type="primary", use_container_width=True, key="ov_new"):
+    hc1, hc2 = st.columns([4, 1])
+    hc1.markdown("## BMS Estimator")
+    hc1.caption(f"TEC Building Systems  ·  {today.strftime('%B %d, %Y')}")
+    if hc2.button("＋ New project", type="primary",
+                  use_container_width=True, key="ov_new"):
         st.session_state.nav = "Projects"
         st.session_state.active_project = None
         st.rerun()
 
     # ── Compute stats ─────────────────────────────────────────────────────
-    total_proj  = len(projects)
-    total_dev   = sum(len(p["takeoff"].get("equipment",[])) for p in projects.values())
-    total_disc  = sum(len(p["takeoff"].get("discrepancies",[])) for p in projects.values())
-    est_ready   = sum(1 for p in projects.values() if module_status(p,"Estimate")=="done")
-    prop_ready  = sum(1 for p in projects.values() if module_status(p,"Proposal")=="done")
+    n = len(projects)
 
-    # Pipeline stage counts
-    stages = {"Takeoff":0,"Point List":0,"Estimate":0,"Proposal":0}
-    for p in projects.values():
-        for mod in reversed(MODULE_ORDER):
-            if module_status(p,mod) in ("done","in_progress"):
-                stages[mod] += 1
-                break
-
-    # Estimate total value
-    total_value = 0
+    # Pipeline value
+    pipeline_val = 0
     for p in projects.values():
         try:
-            lines  = p["estimate"].get("lines",[])
-            markup = p["estimate"].get("markup",10)
-            sub    = sum(float(r.get("Total $",0)) for r in lines)
-            total_value += sub*(1+markup/100)
+            lines  = p["estimate"].get("lines", [])
+            markup = p["estimate"].get("markup", 10)
+            sub    = sum(float(r.get("Total $", 0)) for r in lines)
+            pipeline_val += sub * (1 + markup / 100)
         except: pass
 
-    # Nearest deadline
-    nearest_days, nearest_name = None, None
-    for pname,p in projects.items():
+    # Due this month
+    due_month = 0
+    for p in projects.values():
         bd = p.get("bid_date")
         if bd:
             try:
-                d = (date.fromisoformat(str(bd))-today).days
-                if d>=0 and (nearest_days is None or d<nearest_days):
-                    nearest_days,nearest_name = d,pname
+                days = (date.fromisoformat(str(bd)) - today).days
+                if 0 <= days <= 30: due_month += 1
             except: pass
+
+    # Proposals ready
+    prop_ready = sum(1 for p in projects.values()
+                     if module_status(p, "Proposal") == "done")
+
+    # Needs action
+    needs_action = 0
+    for p in projects.values():
+        disc = len(p["takeoff"].get("discrepancies", []))
+        if disc: needs_action += 1
+        bd = p.get("bid_date")
+        if bd:
+            try:
+                days = (date.fromisoformat(str(bd)) - today).days
+                if days <= 30 and module_status(p, "Estimate") == "not_started":
+                    needs_action += 1
+            except: pass
+
+    # Pipeline funnel counts
+    funnel = {"Scoping": 0, "Estimating": 0, "Proposal": 0, "Submitted": 0}
+    for p in projects.values():
+        ps = module_status(p, "Proposal")
+        es = module_status(p, "Estimate")
+        pl = module_status(p, "Point List")
+        tk = module_status(p, "Takeoff")
+        if ps == "done":                          funnel["Submitted"] += 1
+        elif es in ("done","in_progress"):        funnel["Proposal"]  += 1
+        elif pl in ("done","in_progress"):        funnel["Estimating"]+= 1
+        else:                                     funnel["Scoping"]   += 1
 
     # ── KPI cards ─────────────────────────────────────────────────────────
     k1,k2,k3,k4,k5 = st.columns(5)
-    kpis = [
-        (k1, "📁", str(total_proj),    "Active projects",
-         f"{stages.get('Proposal',0)} at proposal stage"),
-        (k2, "🔧", str(total_dev),     "Total devices",
-         f"across {total_proj} project{'s' if total_proj!=1 else ''}"),
-        (k3, "⚠️", str(total_disc),    "Discrepancies",
-         "need scope clarification" if total_disc else "none found"),
-        (k4, "💰", f"${total_value/1000:.0f}K" if total_value else "—",
+    kpi_data = [
+        (k1, "📁", str(n),
+         "Active bids",
+         f"{funnel['Submitted']} submitted" if n else "no projects yet"),
+        (k2, "💰",
+         f"${pipeline_val/1000:.0f}K" if pipeline_val >= 1000
+         else f"${pipeline_val:,.0f}" if pipeline_val else "—",
          "Pipeline value",
-         f"{est_ready} estimate{'s' if est_ready!=1 else ''} complete"),
-        (k5, "📅", f"{nearest_days}d" if nearest_days is not None else "—",
-         "Next bid deadline",
-         nearest_name or "no deadlines set"),
+         f"{sum(1 for p in projects.values() if p['estimate'].get('lines'))} estimates built"),
+        (k3, "📅", str(due_month),
+         "Due this month",
+         "bids in next 30 days"),
+        (k4, "✅", str(prop_ready),
+         "Proposals ready",
+         f"of {n} active bids"),
+        (k5, "⚠️", str(needs_action),
+         "Needs action",
+         "discrepancies or overdue steps"),
     ]
-    for col, icon, val, label, sub in kpis:
+    for col, icon, val, label, sub in kpi_data:
+        color = "#dc2626" if (label == "Needs action" and int(val or 0) > 0) else                 "#d97706" if (label == "Due this month" and int(val or 0) > 0) else                 "#1e293b"
         col.markdown(f"""
-        <div class="kpi-card">
+        <div class="kpi">
             <div class="kpi-icon">{icon}</div>
-            <div class="kpi-val">{val}</div>
+            <div class="kpi-val" style="color:{color}">{val}</div>
             <div class="kpi-label">{label}</div>
             <div class="kpi-sub">{sub}</div>
         </div>""", unsafe_allow_html=True)
 
-    st.markdown("")
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Pipeline stage bar ────────────────────────────────────────────────
+    # ── Pipeline funnel ────────────────────────────────────────────────────
     if projects:
-        st.markdown("**Pipeline overview**")
-        bar_cols = st.columns(4)
-        colors   = ["#6366f1","#3b82f6","#10b981","#f59e0b"]
-        for i,(mod,color) in enumerate(zip(MODULE_ORDER,colors)):
-            count = stages.get(mod,0)
-            pct   = int(count/total_proj*100) if total_proj else 0
-            bar_cols[i].markdown(f"""
-            <div style="text-align:center">
-                <div style="font-size:11px;color:#64748b;font-weight:500;
-                            text-transform:uppercase;letter-spacing:.05em">{mod}</div>
-                <div style="font-size:22px;font-weight:700;color:{color}">{count}</div>
-                <div class="stage-bar">
-                    <div class="stage-fill" style="width:{pct}%;background:{color}"></div>
-                </div>
-                <div style="font-size:11px;color:#94a3b8">{pct}% of projects</div>
+        st.markdown("**Bid pipeline**")
+        fc = st.columns(4)
+        funnel_colors = [
+            ("#6366f1","#ede9fe"),
+            ("#3b82f6","#dbeafe"),
+            ("#10b981","#d1fae5"),
+            ("#f59e0b","#fef9c3"),
+        ]
+        for i,(stage,cnt) in enumerate(funnel.items()):
+            col, (fg,bg) = fc[i], funnel_colors[i]
+            pct = f"{int(cnt/n*100)}%" if n else "0%"
+            col.markdown(f"""
+            <div class="funnel-col" style="background:{bg}">
+                <div style="font-size:11px;font-weight:600;color:{fg};
+                            text-transform:uppercase;letter-spacing:.05em">{stage}</div>
+                <div style="font-size:2rem;font-weight:700;color:{fg};
+                            line-height:1.2;margin:4px 0">{cnt}</div>
+                <div style="font-size:11px;color:{fg};opacity:.7">{pct} of bids</div>
             </div>""", unsafe_allow_html=True)
-        st.markdown("")
+        st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Main columns: project cards + right panel ─────────────────────────
+    # ── Main + right panel ────────────────────────────────────────────────
     col_main, col_right = st.columns([1.7, 1])
 
     with col_main:
         st.markdown("**Projects**")
         if not projects:
             st.markdown("""
-            <div style="border:2px dashed #e2e8f0;border-radius:12px;padding:40px;
-                        text-align:center;color:#94a3b8">
-                <div style="font-size:32px;margin-bottom:12px">📋</div>
-                <div style="font-size:16px;font-weight:500;color:#64748b;margin-bottom:8px">
-                    No projects yet</div>
-                <div style="font-size:13px">Click <strong>＋ New project</strong> to get started</div>
+            <div style="border:2px dashed #e2e8f0;border-radius:12px;
+                        padding:48px;text-align:center">
+                <div style="font-size:36px;margin-bottom:12px">📋</div>
+                <div style="font-size:16px;font-weight:600;color:#475569;
+                            margin-bottom:6px">No projects yet</div>
+                <div style="font-size:13px;color:#94a3b8">
+                    Click <strong>＋ New project</strong> above to get started</div>
             </div>""", unsafe_allow_html=True)
         else:
             for pname, p in projects.items():
-                disc  = len(p["takeoff"].get("discrepancies",[]))
-                devs  = len(p["takeoff"].get("equipment",[]))
-                bd    = p.get("bid_date","")
-                cli   = p.get("client","—")
+                disc  = len(p["takeoff"].get("discrepancies", []))
+                devs  = len(p["takeoff"].get("equipment", []))
+                bd    = p.get("bid_date", "")
+                cli   = p.get("client") or "—"
 
-                # Progress: how many modules done
-                done_count = sum(1 for mod in MODULE_ORDER
-                                 if module_status(p,mod) in ("done","in_progress"))
-                pct = int(done_count / len(MODULE_ORDER) * 100)
+                # Progress
+                done_n = sum(1 for m in MODULE_ORDER
+                             if module_status(p,m) in ("done","in_progress"))
+                pct    = int(done_n / len(MODULE_ORDER) * 100)
 
-                # Deadline color
+                # Deadline badge
                 dl_html = ""
                 if bd:
                     try:
-                        days = (date.fromisoformat(str(bd))-today).days
-                        cls  = "deadline-urgent" if days<=14 else                                "deadline-soon"   if days<=30 else "deadline-ok"
-                        dl_html = f'<span class="{cls}">📅 {days}d · {bd}</span>'
+                        days = (date.fromisoformat(str(bd)) - today).days
+                        if days < 0:
+                            dl_html = f'<span style="color:#94a3b8">Past due</span>'
+                        elif days <= 14:
+                            dl_html = f'<span style="color:#dc2626;font-weight:600">🔴 {days}d</span>'
+                        elif days <= 30:
+                            dl_html = f'<span style="color:#d97706;font-weight:600">🟡 {days}d</span>'
+                        else:
+                            dl_html = f'<span style="color:#16a34a">🟢 {days}d</span>'
                     except:
                         dl_html = f"📅 {bd}"
 
-                # Module status pills
+                # Stage pills
                 pills = ""
                 for mod in MODULE_ORDER:
                     s = module_status(p, mod)
                     if s == "done":
-                        pills += f'<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 7px;border-radius:4px;margin-right:3px">{mod}</span>'
+                        pills += f'<span class="pill pill-done">✓ {mod}</span>'
                     elif s == "in_progress":
-                        pills += f'<span style="background:#dbeafe;color:#1e40af;font-size:10px;padding:2px 7px;border-radius:4px;margin-right:3px">{mod}</span>'
+                        pills += f'<span class="pill pill-prog">{mod}</span>'
                     elif mod == "Takeoff" and disc:
-                        pills += f'<span style="background:#fef9c3;color:#854d0e;font-size:10px;padding:2px 7px;border-radius:4px;margin-right:3px">⚠️ {disc} disc.</span>'
+                        pills += f'<span class="pill pill-warn">⚠ {disc} disc.</span>'
                     else:
-                        pills += f'<span style="background:#f1f5f9;color:#94a3b8;font-size:10px;padding:2px 7px;border-radius:4px;margin-right:3px">{mod}</span>'
+                        pills += f'<span class="pill pill-empty">{mod}</span>'
 
                 st.markdown(f"""
-                <div class="proj-card">
-                    <div class="proj-name">{pname}</div>
-                    <div class="proj-meta">
-                        {cli} &nbsp;·&nbsp; {devs} devices
-                        {"&nbsp;·&nbsp;" + dl_html if dl_html else ""}
-                    </div>
-                    <div style="margin-bottom:6px">{pills}</div>
-                    <div class="stage-bar">
-                        <div class="stage-fill"
-                             style="width:{pct}%;background:linear-gradient(90deg,#6366f1,#10b981)">
+                <div class="pcard">
+                    <div style="display:flex;justify-content:space-between;align-items:start">
+                        <div>
+                            <div class="pcard-name">{pname}</div>
+                            <div class="pcard-meta">
+                                {cli}
+                                {"&nbsp;·&nbsp;" + str(devs) + " devices" if devs else ""}
+                                {"&nbsp;·&nbsp;" + dl_html if dl_html else ""}
+                            </div>
                         </div>
                     </div>
-                    <div style="font-size:11px;color:#94a3b8">{done_count}/{len(MODULE_ORDER)} modules complete</div>
+                    <div style="margin-bottom:8px">{pills}</div>
+                    <div class="pbar-track">
+                        <div class="pbar-fill" style="width:{pct}%"></div>
+                    </div>
+                    <div style="font-size:11px;color:#94a3b8">
+                        {done_n}/{len(MODULE_ORDER)} modules complete
+                    </div>
                 </div>""", unsafe_allow_html=True)
 
-                if st.button(f"Open {pname} →", key=f"ov_open_{pname}",
+                if st.button(f"Open {pname} →", key=f"ov_op_{pname}",
                              use_container_width=True):
-                    st.session_state.active_project  = pname
-                    st.session_state.active_module   = "Takeoff"
-                    st.session_state.nav             = "Projects"
+                    st.session_state.active_project = pname
+                    st.session_state.active_module  = "Takeoff"
+                    st.session_state.nav            = "Projects"
                     st.rerun()
 
     with col_right:
         # ── Upcoming deadlines ────────────────────────────────────────────
         st.markdown("**Upcoming deadlines**")
-        deadline_projects = []
+        dls = []
         for pname,p in projects.items():
             bd = p.get("bid_date")
             if bd:
                 try:
-                    days = (date.fromisoformat(str(bd))-today).days
-                    deadline_projects.append((days, pname, bd))
+                    days = (date.fromisoformat(str(bd)) - today).days
+                    dls.append((days, pname, bd))
                 except: pass
-        deadline_projects.sort()
+        dls.sort()
 
-        if not deadline_projects:
+        if not dls:
             st.caption("No deadlines set.")
         else:
-            for days, pname, bd in deadline_projects[:6]:
+            for days, pname, bd in dls[:7]:
                 if days < 0:
-                    color, label = "#94a3b8", f"Past due ({abs(days)}d ago)"
+                    color, txt = "#94a3b8", "Past due"
                 elif days <= 14:
-                    color, label = "#dc2626", f"{days} days"
+                    color, txt = "#dc2626", f"{days} days"
                 elif days <= 30:
-                    color, label = "#d97706", f"{days} days"
+                    color, txt = "#d97706", f"{days} days"
                 else:
-                    color, label = "#16a34a", f"{days} days"
+                    color, txt = "#16a34a", f"{days} days"
                 st.markdown(f"""
-                <div style="display:flex;justify-content:space-between;align-items:center;
-                            padding:8px 0;border-bottom:1px solid #f1f5f9">
-                    <span style="font-size:13px;font-weight:500">{pname}</span>
-                    <span style="font-size:12px;color:{color};font-weight:600">{label}</span>
+                <div class="dl-row">
+                    <span style="font-weight:500">{pname}</span>
+                    <span style="color:{color};font-weight:600;font-size:12px">{txt}</span>
                 </div>""", unsafe_allow_html=True)
 
-        # ── Needs attention ───────────────────────────────────────────────
-        st.markdown("")
+        # ── Alerts ────────────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**Needs attention**")
         alerts = []
         for pname,p in projects.items():
             disc = p["takeoff"].get("discrepancies",[])
             if disc:
-                alerts.append(("red", f"<strong>{pname}</strong> — {len(disc)} discrepancies need resolution"))
+                alerts.append(("red",
+                    f"<b>{pname}</b> — {len(disc)} discrepancies need scope clarification"))
             bd = p.get("bid_date")
             if bd:
                 try:
-                    days = (date.fromisoformat(str(bd))-today).days
-                    if days<=30 and module_status(p,"Estimate")=="not_started":
-                        alerts.append(("amber", f"<strong>{pname}</strong> — no estimate, {days}d to bid"))
-                    if days<=14 and module_status(p,"Proposal")=="not_started":
-                        alerts.append(("red", f"<strong>{pname}</strong> — no proposal, {days}d to bid"))
+                    days = (date.fromisoformat(str(bd)) - today).days
+                    if days <= 30 and module_status(p,"Estimate") == "not_started":
+                        alerts.append(("amber",
+                            f"<b>{pname}</b> — no estimate, {days}d to bid"))
+                    if days <= 14 and module_status(p,"Proposal") == "not_started":
+                        alerts.append(("red",
+                            f"<b>{pname}</b> — no proposal, {days}d to bid"))
                 except: pass
-            if (module_status(p,"Takeoff")=="not_started" and
-                (p["docs"].get("SOO") or p["docs"].get("Controls spec"))):
-                alerts.append(("blue", f"<strong>{pname}</strong> — SOO uploaded but takeoff not run"))
+            if (p["docs"].get("SOO") and
+                module_status(p,"Point List") == "not_started"):
+                alerts.append(("blue",
+                    f"<b>{pname}</b> — SOO uploaded, point list not generated"))
 
         if not alerts:
             st.markdown("""
-            <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;
-                        padding:12px;text-align:center;color:#166534;font-size:13px">
+            <div style="background:#f0fdf4;border:1px solid #bbf7d0;
+                        border-radius:8px;padding:14px;text-align:center;
+                        color:#166534;font-size:13px">
                 ✅ All clear — no issues
             </div>""", unsafe_allow_html=True)
         else:
             for color, msg in alerts[:6]:
-                css = {"red":"alert-red","amber":"alert-amber","blue":"alert-blue"}.get(color,"alert-blue")
-                st.markdown(f'<div class="alert-card {css}">{msg}</div>',
-                            unsafe_allow_html=True)
+                css = {"red":"alert-red","amber":"alert-amber",
+                       "blue":"alert-blue"}.get(color,"alert-blue")
+                st.markdown(
+                    f'<div class="alert {css}">{msg}</div>',
+                    unsafe_allow_html=True)
 
-        # ── Quick stats ───────────────────────────────────────────────────
+        # ── Summary stats ─────────────────────────────────────────────────
         if projects:
-            st.markdown("")
-            st.markdown("**Quick stats**")
-            stats = [
-                ("Proposals ready",   prop_ready),
-                ("Total discrepancies", total_disc),
-                ("Devices in scope",   total_dev),
-            ]
-            for label, val in stats:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("**Summary**")
+            total_dev  = sum(len(p["takeoff"].get("equipment",[]))
+                             for p in projects.values())
+            total_disc = sum(len(p["takeoff"].get("discrepancies",[]))
+                             for p in projects.values())
+            for label, val in [
+                ("Total devices in scope", total_dev),
+                ("Total discrepancies",    total_disc),
+                ("Proposals submitted",    prop_ready),
+                ("Pipeline value",
+                 f"${pipeline_val/1000:.0f}K" if pipeline_val else "—"),
+            ]:
                 sc1,sc2 = st.columns([2,1])
                 sc1.caption(label)
                 sc2.markdown(f"**{val}**")
 
-    # ── Product status panel ──────────────────────────────────────────────
+    # ── Roadmap panel ─────────────────────────────────────────────────────
     st.divider()
     with st.expander("🗺 Product status & roadmap"):
         _product_status_panel()
-
 # ── Clients ───────────────────────────────────────────────────────────────────
 def page_clients():
     st.title("Clients")
