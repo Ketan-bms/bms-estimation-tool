@@ -294,33 +294,18 @@ def sidebar():
                 st.session_state.active_project = None
                 st.rerun()
 
-        # ── Projects sub-tree ──────────────────────────────────────────
+        # ── Recent projects — clean list, click to open ───────────────
         if st.session_state.projects:
             st.markdown('<hr class="sb-divider">', unsafe_allow_html=True)
             st.markdown('<div class="sb-section">Recent Projects</div>',
                         unsafe_allow_html=True)
 
-            TASK_ICONS = {
-                "Takeoff":        "📐",
-                "Point List":     "📋",
-                "Estimate":       "💰",
-                "Proposal":       "📄",
-                "Drawing Markup": "🖊",
-                "AI Advisor":     "🤖",
-            }
-            STATUS_DOT = {
-                "done":        ("🟢", "#22c55e"),
-                "in_progress": ("🟡", "#f59e0b"),
-                "issues":      ("🟡", "#f59e0b"),
-                "not_started": ("○",  "#475569"),
-            }
-
             for pname, p in st.session_state.projects.items():
                 is_open = st.session_state.active_project == pname
                 disc    = len(p["takeoff"].get("discrepancies", []))
+                icon    = "📂" if is_open else "📁"
 
-                # Project row — clean link, no dropdown arrow
-                if st.button(f"📁  {pname}" if not is_open else f"📂  {pname}",
+                if st.button(f"{icon}  {pname}",
                              key=f"sb_proj_{pname}",
                              use_container_width=True):
                     st.session_state.active_project = pname
@@ -328,33 +313,8 @@ def sidebar():
                     st.session_state.nav            = "Projects"
                     st.rerun()
 
-                # Task rows — only when project open
-                if is_open:
-                    for mod, icon in TASK_ICONS.items():
-                        is_active_mod = st.session_state.active_module == mod
-
-                        # Get status dot
-                        if mod in MODULE_ORDER:
-                            s = module_status(p, mod)
-                            if mod == "Takeoff" and disc and s != "done":
-                                dot, dot_color = "⚠", "#f59e0b"
-                            else:
-                                dot, dot_color = STATUS_DOT.get(
-                                    s, ("○", "#475569"))
-                        else:
-                            dot, dot_color = "○", "#475569"
-
-                        label = f"{icon}  {mod}"
-                        if is_active_mod:
-                            label = f"{icon}  {mod}"
-
-                        if st.button(label,
-                                     key=f"sb_mod_{pname}_{mod}",
-                                     use_container_width=True):
-                            st.session_state.active_project = pname
-                            st.session_state.active_module  = mod
-                            st.session_state.nav            = "Projects"
-                            st.rerun()
+                if disc:
+                    st.caption(f"   ⚠️ {disc} discrepancies")
 
         st.markdown('<hr class="sb-divider">', unsafe_allow_html=True)
 
@@ -998,7 +958,13 @@ def page_projects_list():
                 col = st.columns([0.4,3,0.5,1.2,0.7,0.7,1,0.8])
                 col[0].markdown(f'<span style="color:#94a3b8;font-size:12px">'
                                 f'#{r["id"]}</span>', unsafe_allow_html=True)
-                col[1].markdown(f'**{pname}**')
+                # Project name is clickable
+                if col[1].button(f"**{pname}**", key=f"name_open_{pname}",
+                                 use_container_width=True):
+                    st.session_state.active_project = pname
+                    st.session_state.active_module  = "Takeoff"
+                    st.session_state.nav            = "Projects"
+                    st.rerun()
                 # % with mini bar
                 col[2].markdown(
                     f'<div style="font-size:12px;font-weight:600">{r["pct"]}%</div>'
