@@ -125,12 +125,20 @@ def init():
 
 PROJECT_STATUSES = ["Active","In Progress","On Hold","Completed","Archived"]
 PROJECT_STATUS_CSS = {
-    "Active":      ("background:#dbeafe;color:#1e40af",   "🔵"),
-    "In Progress": ("background:#fef9c3;color:#854d0e",   "🟡"),
-    "On Hold":     ("background:#fed7aa;color:#9a3412",   "🟠"),
-    "Completed":   ("background:#dcfce7;color:#166534",   "🟢"),
-    "Archived":    ("background:#f1f5f9;color:#475569",   "⚫"),
+    "Active":      ("background:#dbeafe;color:#1e40af;border:1px solid #93c5fd",   "🔵"),
+    "In Progress": ("background:#fef9c3;color:#854d0e;border:1px solid #fcd34d",   "🟡"),
+    "On Hold":     ("background:#ffedd5;color:#9a3412;border:1px solid #fdba74",   "🟠"),
+    "Completed":   ("background:#dcfce7;color:#166534;border:1px solid #86efac",   "🟢"),
+    "Archived":    ("background:#f1f5f9;color:#475569;border:1px solid #cbd5e1",   "⚫"),
 }
+
+def status_badge_html(status):
+    """Return a colored HTML badge for a project status."""
+    css, emoji = PROJECT_STATUS_CSS.get(
+        status, ("background:#f1f5f9;color:#475569;border:1px solid #cbd5e1", "○"))
+    return (f'<span style="{css};padding:3px 10px;border-radius:20px;' 
+            f'font-size:11px;font-weight:600;display:inline-block">' 
+            f'{emoji} {status}</span>')
 
 def new_project(name, client, bid_date, address):
     return {
@@ -541,8 +549,9 @@ def page_overview():
 
                     # Info row
                     proj_st = p.get("project_status","Active")
-                    _, st_emoji = PROJECT_STATUS_CSS.get(proj_st,("","🔵"))
-                    meta_parts = [f"{st_emoji} {proj_st}"]
+                    meta_parts = []
+                    tc1.markdown(status_badge_html(proj_st),
+                                 unsafe_allow_html=True)
                     if devs:  meta_parts.append(f"📐 {devs} devices")
                     if disc:  meta_parts.append(f"⚠️ {disc} discrepancies")
                     meta_parts.append(f"{done_n}/{len(MODULE_ORDER)} modules")
@@ -768,10 +777,11 @@ def page_projects_list():
         display:inline-block; padding:3px 10px; border-radius:20px;
         font-size:11px; font-weight:600;
     }
-    .status-inprog  { background:#dbeafe; color:#1e40af; }
-    .status-done    { background:#dcfce7; color:#166534; }
-    .status-review  { background:#fef9c3; color:#854d0e; }
-    .status-new     { background:#f1f5f9; color:#64748b; }
+    .status-active   { background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; }
+    .status-inprog   { background:#fef9c3; color:#854d0e; border:1px solid #fcd34d; }
+    .status-onhold   { background:#ffedd5; color:#9a3412; border:1px solid #fdba74; }
+    .status-complete { background:#dcfce7; color:#166534; border:1px solid #86efac; }
+    .status-archived { background:#f1f5f9; color:#475569; border:1px solid #cbd5e1; }
     .pct-bar-track  { height:5px; border-radius:3px;
                       background:#e2e8f0; width:100%; }
     .pct-bar-fill   { height:5px; border-radius:3px;
@@ -949,10 +959,11 @@ def page_projects_list():
 
             # ── Table rows ────────────────────────────────────────────
             STATUS_CSS = {
+                "Active":      "status-active",
                 "In Progress": "status-inprog",
-                "Complete":    "status-done",
-                "Review":      "status-review",
-                "New":         "status-new",
+                "On Hold":     "status-onhold",
+                "Completed":   "status-complete",
+                "Archived":    "status-archived",
             }
             for r in rows:
                 pname  = r["name"]
@@ -989,9 +1000,9 @@ def page_projects_list():
                     f'<div class="pct-bar-track"><div class="pct-bar-fill"'
                     f' style="width:{r["pct"]}%"></div></div>',
                     unsafe_allow_html=True)
-                # Editable status dropdown inline
-                css_style, emoji = PROJECT_STATUS_CSS.get(
-                    status, ("background:#f1f5f9;color:#475569", "🔵"))
+                # Colored badge + inline dropdown
+                col[3].markdown(status_badge_html(status),
+                                unsafe_allow_html=True)
                 new_status = col[3].selectbox(
                     "Status", PROJECT_STATUSES,
                     index=PROJECT_STATUSES.index(status)
@@ -1162,15 +1173,15 @@ def page_project_detail(p):
         st.rerun()
     hc.markdown(f"## {p['name']}")
     proj_st = p.get("project_status","Active")
-    _, st_emoji = PROJECT_STATUS_CSS.get(proj_st,("","🔵"))
+    # Colored badge in header
+    hc.markdown(status_badge_html(proj_st), unsafe_allow_html=True)
     hc.caption(
-        f"{st_emoji} {proj_st}"
-        + (f"  ·  {p.get('address')}" if p.get('address') else "")
-        + f"  ·  Bid: {p.get('bid_date','TBD')}"
+        (f"{p.get('address')}  ·  " if p.get('address') else "")
+        + f"Bid: {p.get('bid_date','TBD')}"
         + (f"  ·  {p.get('client')}" if p.get('client') else "")
     )
-    # Quick status change in project header
-    hdr_st = hc.selectbox("Project status", PROJECT_STATUSES,
+    # Quick status change dropdown
+    hdr_st = hc.selectbox("Change status", PROJECT_STATUSES,
                            index=PROJECT_STATUSES.index(proj_st)
                                  if proj_st in PROJECT_STATUSES else 0,
                            key=f"hdr_status_{p['name']}",
