@@ -202,7 +202,7 @@ def sidebar():
         st.markdown("## 🏗 BMS Estimator")
         st.caption(f"FY {date.today().year}")
         st.divider()
-        for label in ["Overview","Clients","Projects","Reports"]:
+        for label in ["Overview","Projects","Reports"]:
             active = st.session_state.nav == label
             if st.button(label, key=f"nav_{label}",
                          type="primary" if active else "secondary",
@@ -639,37 +639,95 @@ def page_projects_list():
 
     with st.expander("➕ New project", expanded=not bool(projects)):
         with st.form("new_proj"):
+            # ── Basic info ────────────────────────────────────────────
+            st.markdown("**Project details**")
             c1,c2 = st.columns(2)
             pname    = c1.text_input("Project name *")
             address  = c2.text_input("Address")
             c3,c4   = st.columns(2)
-            client_opts = ["(no client)"] + list(st.session_state.clients.keys())
-            client   = c3.selectbox("Client", client_opts)
-            bid_date = c4.date_input("Bid date", value=None)
-            if client == "(no client)": client = None
+            bid_date = c3.date_input("Bid date", value=None)
+            # Saved client templates (for reuse)
+            saved_names = list(st.session_state.clients.keys())
+            client_opts = ["New client / no template"] + saved_names
+            client_sel  = c4.selectbox("Reuse saved settings", client_opts,
+                                        help="Pick a previously saved client to auto-fill rates and templates")
 
-            st.markdown("**Upload project documents**")
-            d1,d2,d3,d4 = st.columns(4)
-            draw_f = d1.file_uploader("Drawings (PDF)",  type=["pdf"],        key="np_draw")
-            soo_f  = d2.file_uploader("SOO (PDF/DOCX)",  type=["pdf","docx"], key="np_soo")
-            spec_f = d3.file_uploader("Controls spec",   type=["pdf","docx"], key="np_spec")
-            epl_f  = d4.file_uploader("Existing point list (xlsx)", type=["xlsx"], key="np_epl")
+            st.divider()
+
+            # ── Templates ─────────────────────────────────────────────
+            st.markdown("**Templates** *(optional — skip if not needed)*")
+            t1,t2 = st.columns(2)
+            pl_file   = t1.file_uploader("Point list template (.xlsx)",
+                                          type=["xlsx"], key="np_pl")
+            prop_file = t2.file_uploader("Proposal template (.docx)",
+                                          type=["docx"], key="np_prop")
+            t1.caption("AI matches your column format exactly")
+            t2.caption("Use {{PROJECT_NAME}} {{CLIENT}} {{DATE}} {{SCOPE_TEXT}}")
+
+            st.divider()
+
+            # ── Labor rates ───────────────────────────────────────────
+            st.markdown("**Labor rates ($/hr)**")
+            # Pre-fill from saved client if selected
+            saved_rates = (st.session_state.clients.get(client_sel, {}).get("rates", DEFAULT_RATES)
+                           if client_sel != "New client / no template" else DEFAULT_RATES)
+            rc = st.columns(len(PHASES))
+            rates = {}
+            for i,ph in enumerate(PHASES):
+                rates[ph] = rc[i].number_input(ph, 0, 500,
+                                                int(saved_rates.get(ph, DEFAULT_RATES[ph])),
+                                                key=f"np_rate_{ph}")
+
+            st.divider()
+
+            # ── Documents ─────────────────────────────────────────────
+            st.markdown("**Project documents** *(upload now or later in Takeoff tab)*")
+            d1,d2,d3 = st.columns(3)
+            draw_f = d1.file_uploader("Drawings (PDF)",   type=["pdf"],        key="np_draw")
+            soo_f  = d2.file_uploader("SOO (PDF/DOCX)",   type=["pdf","docx"], key="np_soo")
+            spec_f = d3.file_uploader("Controls spec",    type=["pdf","docx"], key="np_spec")
 
             if st.form_submit_button("Create project", type="primary"):
                 if not pname:
                     st.error("Project name required.")
                 elif pname in projects:
-                    st.error("Name already exists.")
+                    st.error("A project with this name already exists.")
                 else:
-                    p = new_project(pname, client,
+                    # Use saved client name as label if reusing
+                    client_label = (client_sel
+                                    if client_sel != "New client / no template"
+                                    else None)
+                    p = new_project(pname, client_label,
                                     str(bid_date) if bid_date else None, address)
+
+                    # Attach documents
                     for label,f in [("Drawings",draw_f),("SOO",soo_f),
-                                    ("Controls spec",spec_f),("Existing point list",epl_f)]:
+                                    ("Controls spec",spec_f)]:
                         if f:
                             p["docs"][label]      = f.read()
                             p["doc_names"][label] = f.name
-                    cl = st.session_state.clients.get(client,{}) if client else {}
-                    p["estimate"]["rates"] = dict(cl.get("rates", DEFAULT_RATES))
+
+                    # Set rates
+                    p["estimate"]["rates"] = dict(rates)
+
+                    # Save templates into clients store for reuse
+                    if pl_file or prop_file:
+                        entry = {"rates": rates}
+                        if pl_file:
+                            entry["pl_template_bytes"] = pl_file.read()
+                            entry["pl_template_name"]  = pl_file.name
+                        if prop_file:
+                            entry["prop_template_bytes"] = prop_file.read()
+                            entry["prop_template_name"]  = prop_file.name
+                        # Save under project name so it can be reused
+                        key = client_label or pname
+                        st.session_state.clients[key] = entry
+                    elif client_label:
+                        # Inherit templates from saved client
+                        saved_cl = st.session_state.clients.get(client_label, {})
+                        if saved_cl:
+                            p["_inherited_client"] = client_label
+
                     st.session_state.projects[pname] = p
                     st.session_state.active_project  = pname
                     st.session_state.active_module   = "Takeoff"
@@ -2123,7 +2181,6 @@ def main():
     init(); sidebar()
     nav = st.session_state.nav
     if nav=="Overview":  page_overview()
-    elif nav=="Clients": page_clients()
     elif nav=="Projects":page_projects()
     elif nav=="Reports": page_reports()
 
