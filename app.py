@@ -1250,138 +1250,1180 @@ def page_project_detail(p):
 
 # ── Module 1: Takeoff ─────────────────────────────────────────────────────────
 def module_takeoff(p):
-    st.markdown("### Takeoff")
-    docs = p.get("doc_names",{})
+    """Takeoff module with 7 independent sub-tabs."""
 
-    c1,c2,c3 = st.columns(3)
-    c1.info(f"📐 Drawings: `{docs.get('Drawings','not uploaded')}`")
-    c2.info(f"📄 SOO: `{docs.get('SOO','not uploaded')}`")
-    c3.info(f"📋 Spec: `{docs.get('Controls spec','—')}`")
+    # Ensure takeoff sub-data structures exist
+    if "soo_register"    not in p: p["soo_register"]    = {}
+    if "schedule_data"   not in p: p["schedule_data"]   = {}
+    if "floorplan_data"  not in p: p["floorplan_data"]  = {}
+    if "riser_data"      not in p: p["riser_data"]      = {}
+    if "electrical_data" not in p: p["electrical_data"] = {}
+    if "plumbing_data"   not in p: p["plumbing_data"]   = {}
+    if "master_takeoff"  not in p: p["master_takeoff"]  = {}
 
-    with st.expander("Add / replace documents"):
-        f1,f2,f3 = st.columns(3)
-        nd = f1.file_uploader("Drawings",     type=["pdf"],        key="tk_d")
-        ns = f2.file_uploader("SOO",          type=["pdf","docx"], key="tk_s")
-        nc = f3.file_uploader("Controls spec",type=["pdf","docx"], key="tk_c")
-        if st.button("Save", key="tk_save"):
-            for lbl,f in [("Drawings",nd),("SOO",ns),("Controls spec",nc)]:
-                if f:
-                    p["docs"][lbl]=f.read(); p["doc_names"][lbl]=f.name
-            st.success("Saved."); st.rerun()
+    soo_loaded = bool(p["soo_register"].get("systems"))
 
-    st.divider()
+    tabs = st.tabs([
+        "📖 SOO",
+        "📋 Schedule",
+        "🏗 Floor Plan",
+        "📐 Riser",
+        "⚡ Electrical",
+        "🔧 Plumbing",
+        "📊 Master Takeoff",
+    ])
 
-    # ── Load takeoff data ─────────────────────────────────────────────────
-    st.markdown("**Extract device tags from drawings**")
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 1 — SOO Reader
+    # ══════════════════════════════════════════════════════════════════
+    with tabs[0]:
+        _tab_soo(p)
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 2 — Schedule
+    # ══════════════════════════════════════════════════════════════════
+    with tabs[1]:
+        _tab_schedule(p, soo_loaded)
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 3 — Floor Plan
+    # ══════════════════════════════════════════════════════════════════
+    with tabs[2]:
+        _tab_floorplan(p, soo_loaded)
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 4 — Riser
+    # ══════════════════════════════════════════════════════════════════
+    with tabs[3]:
+        _tab_riser(p, soo_loaded)
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 5 — Electrical
+    # ══════════════════════════════════════════════════════════════════
+    with tabs[4]:
+        _tab_electrical(p, soo_loaded)
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 6 — Plumbing
+    # ══════════════════════════════════════════════════════════════════
+    with tabs[5]:
+        _tab_plumbing(p, soo_loaded)
+
+    # ══════════════════════════════════════════════════════════════════
+    # TAB 7 — Master Takeoff
+    # ══════════════════════════════════════════════════════════════════
+    with tabs[6]:
+        _tab_master(p)
+
+
+# ── SOO Tab ───────────────────────────────────────────────────────────────────
+def _tab_soo(p):
+    st.markdown("### SOO Reader")
     st.caption(
-        "Searches the drawing PDF text layer for BMS device tags. "
-        "No API key needed — works entirely offline using PyMuPDF. "
-        "Cross-checks against SOO automatically."
+        "Upload the Sequence of Operations PDF. "
+        "Click Analyse to extract confirmed BMS scope, control types, "
+        "exclusions, and I/O points. This register filters all other takeoff tabs."
     )
 
-    if not p["docs"].get("Drawings"):
-        st.warning("⚠️ Upload drawings using **Add / replace documents** above first.")
-    else:
-        fname = p["doc_names"].get("Drawings", "")
-        fsize = round(len(p["docs"]["Drawings"]) / 1024 / 1024, 1)
-        c1, c2 = st.columns([2, 1])
-        c1.info(f"📐 `{fname}` · {fsize} MB ready")
-        if c2.button("🔍 Run takeoff", type="primary", key="run_tk"):
-            prog = st.progress(0, text="Opening PDF...")
-            try:
-                prog.progress(15, text="Reading text layer — scanning every page...")
-                pdf_bytes = p["docs"]["Drawings"]
-                prog.progress(40, text="Finding device tags (FCU, AHU, DOAS, EUH, UH...)...")
-                result = run_pdf_takeoff(pdf_bytes)
-                prog.progress(85, text="Cross-checking against SOO...")
-                takeoff = takeoff_to_session_format(result)
-                prog.progress(100, text="Done.")
-                p["takeoff"].update(takeoff)
-                _save_app_state()
-                stats = result["stats"]
-                st.success(
-                    f"✅ {stats['total_pages']} pages read · "
-                    f"{stats['schedule_pages']} schedule pages · "
-                    f"**{stats['total_tags']} devices found** · "
-                    f"**{stats['discrepancies']} discrepancies**"
-                )
-                st.rerun()
-            except Exception as e:
-                prog.progress(100, text="Error.")
-                st.error(f"Error reading PDF: {e}")
+    # Upload
+    soo_bytes = p["docs"].get("SOO")
+    soo_name  = p["doc_names"].get("SOO", "")
+
+    col_up, col_info = st.columns([1, 2])
+    with col_up:
+        new_soo = st.file_uploader(
+            "Upload SOO (PDF or DOCX)",
+            type=["pdf", "docx"],
+            key="soo_upload_tab"
+        )
+        if new_soo:
+            p["docs"]["SOO"]      = new_soo.read()
+            p["doc_names"]["SOO"] = new_soo.name
+            soo_bytes = p["docs"]["SOO"]
+            soo_name  = new_soo.name
+            _save_app_state()
+            st.success(f"✅ Uploaded: `{soo_name}`")
+
+    with col_info:
+        if soo_bytes:
+            size = round(len(soo_bytes)/1024/1024, 1)
+            st.info(f"📄 `{soo_name}` · {size} MB loaded")
+        else:
+            st.warning("No SOO uploaded yet.")
 
     st.divider()
-    with st.expander("Or load from JSON (pre-processed data)"):
-        st.caption("Upload schedule_ground_truth.json if you have pre-processed data.")
-        gt = st.file_uploader("schedule_ground_truth.json", type=["json"], key="tk_gt")
-        if gt:
-            if st.button("Load JSON", key="tk_load", type="primary"):
-                data = json.load(gt)
-                equip = data.get("equipment", [])
-                p["takeoff"]["equipment"]     = equip
-                p["takeoff"]["discrepancies"] = [e for e in equip if e.get("discrepancy_flag")]
-                p["takeoff"]["status"]        = "issues" if p["takeoff"]["discrepancies"] else "done"
-                _save_app_state()
-                st.success(f"✅ {len(equip)} devices · {len(p['takeoff']['discrepancies'])} discrepancies")
-                st.rerun()
 
-    equip = p["takeoff"].get("equipment",[])
-    discs = p["takeoff"].get("discrepancies",[])
-    if not equip:
-        st.info("No takeoff data. Upload drawings and click **Run takeoff** above.")
+    # Analyse button
+    if not soo_bytes:
+        st.info("Upload the SOO above to enable analysis.")
         return
 
-    m1,m2,m3,m4 = st.columns(4)
-    m1.metric("Total devices",  len(equip))
-    m2.metric("SOO confirmed",  sum(1 for e in equip if e.get("soo_confirmed")))
-    m3.metric("Discrepancies",  len(discs), delta=f"{len(discs)} issues" if discs else None,
-              delta_color="inverse" if discs else "normal")
-    m4.metric("Needs review",   sum(1 for e in equip if e.get("soo_confirmed") is None and not e.get("discrepancy_flag")))
-
-    if discs:
-        st.markdown(
-            f'<div class="disc-banner">⚠️ <strong>{len(discs)} devices have no SOO sequence.</strong> '
-            f'Review below — use AI Advisor to resolve.</div>', unsafe_allow_html=True)
-
-    t1,t2,t3 = st.tabs(["Discrepancies","All devices","By classification"])
-    with t1:
-        if not discs: st.success("No discrepancies.")
+    if st.button("🔍 Read SOO & build scope register",
+                 type="primary", key="analyse_soo"):
+        k = api_key()
+        if not k:
+            st.error("Add Anthropic API key in the sidebar.")
         else:
-            df = pd.DataFrame([{"Tag":d.get("tag",""),"System":d.get("system",""),
-                                 "Floor":d.get("floor",""),"Severity":"HIGH",
-                                 "Action":d.get("action","Verify BMS scope")} for d in discs])
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.download_button("⬇ Export CSV", df.to_csv(index=False),
-                               f"discrepancies_{p['name'].replace(' ','_')}.csv")
-    with t2:
-        rows = [{"Tag":e.get("tag",""),"Floor":e.get("floor",""),"System":e.get("system",""),
-                 "Classification":e.get("classification",""),
-                 "BMS":e.get("bms_interface_default",e.get("bms_interface","")),
-                 "Status":get_status(e)} for e in equip]
-        df2 = pd.DataFrame(rows)
-        srch = st.text_input("Search", placeholder="FCU, pump, AHU…", key="tk_srch")
-        if srch:
-            df2 = df2[df2["Tag"].str.contains(srch,case=False,na=False)|
-                      df2["System"].str.contains(srch,case=False,na=False)]
-        st.dataframe(df2, use_container_width=True, hide_index=True, height=400)
-        st.download_button("⬇ Export CSV", df2.to_csv(index=False),
-                           f"register_{p['name'].replace(' ','_')}.csv")
-    with t3:
-        agg = defaultdict(lambda:{"Total":0,"Confirmed":0,"Discrepancy":0})
-        for e in equip:
-            cls = e.get("classification","Unknown")
-            agg[cls]["Total"] += 1
-            s = get_status(e)
-            if s=="SOO confirmed": agg[cls]["Confirmed"]+=1
-            elif s=="Discrepancy": agg[cls]["Discrepancy"]+=1
-        df3 = pd.DataFrame([{"Classification":k,"Total":v["Total"],
-                              "Confirmed":v["Confirmed"],"Discrepancies":v["Discrepancy"]}
-                             for k,v in sorted(agg.items())])
-        st.bar_chart(df3.set_index("Classification")[["Confirmed","Discrepancies"]],
-                     color=["#22c55e","#f59e0b"])
-        st.dataframe(df3, use_container_width=True, hide_index=True)
+            with st.spinner("Reading SOO — extracting systems, control types, I/O tables..."):
+                register = _analyse_soo(p["docs"]["SOO"],
+                                        p["doc_names"].get("SOO",""), k)
+            p["soo_register"] = register
+            _save_app_state()
+            st.success(
+                f"✅ {len(register.get('systems',[]))} systems confirmed · "
+                f"{len(register.get('exclusions',[]))} exclusions · "
+                f"{len(register.get('questions',[]))} questions"
+            )
+            st.rerun()
 
-# ── Module 2: Point List ──────────────────────────────────────────────────────
+    reg = p.get("soo_register", {})
+    if not reg.get("systems"):
+        st.info("No SOO analysis yet. Click 'Read SOO' above.")
+        return
+
+    # Show register
+    r_tab1, r_tab2, r_tab3, r_tab4 = st.tabs([
+        "✅ Confirmed scope",
+        "❌ Exclusions",
+        "❓ Questions / gaps",
+        "📋 I/O summary"
+    ])
+
+    with r_tab1:
+        systems = reg.get("systems", [])
+        st.markdown(f"**{len(systems)} systems confirmed in BMS scope**")
+        if systems:
+            df = pd.DataFrame(systems)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            _export_btn(df, "soo_confirmed", p["name"], key="exp_soo_conf")
+
+    with r_tab2:
+        excl = reg.get("exclusions", [])
+        if excl:
+            df = pd.DataFrame(excl)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No explicit exclusions found.")
+
+    with r_tab3:
+        qs = reg.get("questions", [])
+        if qs:
+            for q in qs:
+                st.warning(f"❓ {q}")
+        else:
+            st.success("No gaps or questions found.")
+
+    with r_tab4:
+        io_summary = reg.get("io_summary", [])
+        if io_summary:
+            df = pd.DataFrame(io_summary)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            _export_btn(df, "soo_io_summary", p["name"], key="exp_soo_io")
+        else:
+            st.info("No I/O tables extracted.")
+
+
+# ── Schedule Tab ──────────────────────────────────────────────────────────────
+def _tab_schedule(p, soo_loaded):
+    st.markdown("### Schedule Takeoff")
+    st.caption(
+        "Upload mechanical schedule sheets (PDF). "
+        "Tool extracts BMS-relevant devices, quantities, locations, and groupings. "
+        "Filtered against SOO scope register."
+    )
+
+    if not soo_loaded:
+        st.warning("⚠️ SOO not yet analysed. Results will show all devices unfiltered. "
+                   "Read SOO first for accurate BMS scope filtering.")
+
+    # Upload
+    sched_bytes = p["docs"].get("Schedule")
+    sched_name  = p["doc_names"].get("Schedule", "")
+
+    col_up, col_info = st.columns([1, 2])
+    with col_up:
+        new_f = st.file_uploader(
+            "Upload schedule sheets (PDF)",
+            type=["pdf"],
+            key="sched_upload"
+        )
+        if new_f:
+            p["docs"]["Schedule"]      = new_f.read()
+            p["doc_names"]["Schedule"] = new_f.name
+            sched_bytes = p["docs"]["Schedule"]
+            sched_name  = new_f.name
+            _save_app_state()
+            st.success(f"✅ `{sched_name}`")
+
+    with col_info:
+        if sched_bytes:
+            size = round(len(sched_bytes)/1024/1024, 1)
+            st.info(f"📋 `{sched_name}` · {size} MB")
+        else:
+            st.warning("No schedule uploaded.")
+
+    st.divider()
+
+    if not sched_bytes:
+        st.info("Upload schedule sheets above.")
+        return
+
+    if st.button("🔍 Analyse schedule", type="primary", key="analyse_sched"):
+        with st.spinner("Reading schedule — extracting tags, quantities, locations..."):
+            result = _analyse_schedule(
+                sched_bytes,
+                p.get("soo_register", {})
+            )
+        p["schedule_data"] = result
+        # Update main takeoff equipment list
+        p["takeoff"]["equipment"]     = result.get("equipment", [])
+        p["takeoff"]["discrepancies"] = result.get("discrepancies", [])
+        p["takeoff"]["status"]        = "done" if result.get("equipment") else "not_started"
+        _save_app_state()
+        st.success(
+            f"✅ {result.get('total_devices',0)} devices found · "
+            f"{result.get('bms_scope',0)} in BMS scope · "
+            f"{result.get('flagged',0)} flagged for floor plan"
+        )
+        st.rerun()
+
+    data = p.get("schedule_data", {})
+    if not data.get("equipment"):
+        st.info("No schedule data yet. Click Analyse.")
+        return
+
+    _show_takeoff_results(data, p["name"], source="schedule")
+
+
+# ── Floor Plan Tab ─────────────────────────────────────────────────────────────
+def _tab_floorplan(p, soo_loaded):
+    st.markdown("### Floor Plan Takeoff")
+    st.caption(
+        "Upload floor plan PDFs. Tool searches for tags from the schedule register, "
+        "counts devices per floor, and generates an annotated PDF with highlights."
+    )
+
+    if not p.get("schedule_data", {}).get("equipment"):
+        st.info("ℹ️ Run Schedule Analyse first to build the tag register used for floor plan cross-check.")
+
+    fp_bytes = p["docs"].get("Floor Plan")
+    fp_name  = p["doc_names"].get("Floor Plan", "")
+
+    col_up, col_info = st.columns([1, 2])
+    with col_up:
+        new_f = st.file_uploader(
+            "Upload floor plan (PDF)",
+            type=["pdf"],
+            key="fp_upload"
+        )
+        if new_f:
+            p["docs"]["Floor Plan"]      = new_f.read()
+            p["doc_names"]["Floor Plan"] = new_f.name
+            fp_bytes = p["docs"]["Floor Plan"]
+            fp_name  = new_f.name
+            _save_app_state()
+            st.success(f"✅ `{fp_name}`")
+
+    with col_info:
+        if fp_bytes:
+            size = round(len(fp_bytes)/1024/1024, 1)
+            st.info(f"🏗 `{fp_name}` · {size} MB")
+        else:
+            st.warning("No floor plan uploaded.")
+
+    st.divider()
+
+    if not fp_bytes:
+        st.info("Upload floor plan above.")
+        return
+
+    if st.button("🔍 Analyse floor plan", type="primary", key="analyse_fp"):
+        with st.spinner("Scanning floor plan — finding device tags and coordinates..."):
+            # Get tag register from schedule
+            sched_equip = p.get("schedule_data", {}).get("equipment", [])
+            soo_tags    = set(s.get("tag","").upper()
+                             for s in p.get("soo_register",{}).get("systems",[]))
+            sched_tags  = set(e.get("tag","").upper() for e in sched_equip)
+
+            from drawing_markup import DrawingMarkup
+            dm = DrawingMarkup(fp_bytes,
+                               soo_tags=soo_tags,
+                               schedule_tags=sched_tags)
+            dm.process()
+
+            result = {
+                "statuses":     dm.get_all_statuses_df(),
+                "counts":       dm.get_summary_counts(),
+                "amber_tags":   dm.get_amber_tags(),
+                "red_tags":     dm.get_red_tags(),
+                "page_count":   dm.page_count(),
+                "sched_pages":  dm.schedule_page_count(),
+                "dm_cache_key": f"dm_fp_{p['name']}",
+            }
+            st.session_state[f"dm_fp_{p['name']}"] = dm
+            p["floorplan_data"] = result
+            _save_app_state()
+
+            counts = result["counts"]
+            st.success(
+                f"✅ {result['page_count']} pages · "
+                f"{counts['green']} confirmed · "
+                f"{counts['amber']} no SOO sequence · "
+                f"{counts['red']} not found"
+            )
+            st.rerun()
+
+    data = p.get("floorplan_data", {})
+    if not data.get("statuses"):
+        st.info("No floor plan data yet. Click Analyse.")
+        return
+
+    # Results
+    counts = data.get("counts", {})
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("🟢 Confirmed",    counts.get("green",0))
+    m2.metric("🟡 No SOO seq",   counts.get("amber",0))
+    m3.metric("🔴 Not found",    counts.get("red",0))
+    m4.metric("🔵 Not in sched", counts.get("blue",0))
+
+    # Tag table
+    df = pd.DataFrame(data["statuses"])
+    search = st.text_input("Search tag", key="fp_search")
+    if search:
+        df = df[df["Tag"].str.contains(search, case=False, na=False)]
+    st.dataframe(df, use_container_width=True, hide_index=True, height=350)
+
+    # Export annotated PDF
+    st.divider()
+    if st.button("Generate annotated PDF", type="primary", key="gen_fp_pdf"):
+        dm = st.session_state.get(f"dm_fp_{p['name']}")
+        if dm:
+            with st.spinner("Generating annotated PDF..."):
+                pdf_out = dm.generate_annotated_pdf()
+            st.download_button(
+                "⬇ Download annotated floor plan",
+                data=pdf_out,
+                file_name=f"markup_floorplan_{p['name'].replace(' ','_')}.pdf",
+                mime="application/pdf",
+                key="dl_fp_pdf"
+            )
+        else:
+            st.warning("Re-run Analyse to regenerate PDF.")
+
+    _export_btn(pd.DataFrame(data["statuses"]),
+                "floorplan_takeoff", p["name"], key="exp_fp")
+
+
+# ── Riser Tab ─────────────────────────────────────────────────────────────────
+def _tab_riser(p, soo_loaded):
+    st.markdown("### Riser Diagram Takeoff")
+    st.caption(
+        "Upload water riser and/or air riser PDFs. "
+        "Tool finds labeled devices (BTU meters, DP sensors, valves, etc.). "
+        "Symbol-only items flagged for manual review."
+    )
+
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        new_wr = st.file_uploader("Water riser (PDF)", type=["pdf"], key="wr_upload")
+        if new_wr:
+            p["docs"]["Water Riser"]      = new_wr.read()
+            p["doc_names"]["Water Riser"] = new_wr.name
+            _save_app_state()
+            st.success(f"✅ `{new_wr.name}`")
+        if p["doc_names"].get("Water Riser"):
+            st.info(f"🔵 `{p['doc_names']['Water Riser']}`")
+
+    with col_up2:
+        new_ar = st.file_uploader("Air riser (PDF)", type=["pdf"], key="ar_upload")
+        if new_ar:
+            p["docs"]["Air Riser"]      = new_ar.read()
+            p["doc_names"]["Air Riser"] = new_ar.name
+            _save_app_state()
+            st.success(f"✅ `{new_ar.name}`")
+        if p["doc_names"].get("Air Riser"):
+            st.info(f"🌬 `{p['doc_names']['Air Riser']}`")
+
+    st.divider()
+
+    has_riser = p["docs"].get("Water Riser") or p["docs"].get("Air Riser")
+    if not has_riser:
+        st.info("Upload water or air riser above.")
+        return
+
+    if st.button("🔍 Analyse risers", type="primary", key="analyse_riser"):
+        with st.spinner("Scanning riser diagrams..."):
+            result = _analyse_riser(
+                p["docs"].get("Water Riser"),
+                p["docs"].get("Air Riser"),
+                p.get("soo_register", {})
+            )
+        p["riser_data"] = result
+        _save_app_state()
+        st.success(
+            f"✅ {result.get('total',0)} devices found · "
+            f"{result.get('flagged',0)} symbol-only items flagged"
+        )
+        st.rerun()
+
+    data = p.get("riser_data", {})
+    if not data.get("equipment"):
+        st.info("No riser data yet. Click Analyse.")
+        return
+
+    _show_takeoff_results(data, p["name"], source="riser")
+
+
+# ── Electrical Tab ─────────────────────────────────────────────────────────────
+def _tab_electrical(p, soo_loaded):
+    st.markdown("### Electrical Takeoff")
+    st.caption(
+        "Upload electrical drawings. Tool finds only items the SOO confirms "
+        "as BMS monitoring scope (generator, ATS, meters, UPS, heat trace, etc.)."
+    )
+
+    if not soo_loaded:
+        st.warning("⚠️ Read SOO first — electrical takeoff is filtered by SOO scope.")
+
+    new_f = st.file_uploader("Electrical drawings (PDF)", type=["pdf"], key="elec_upload")
+    if new_f:
+        p["docs"]["Electrical"]      = new_f.read()
+        p["doc_names"]["Electrical"] = new_f.name
+        _save_app_state()
+        st.success(f"✅ `{new_f.name}`")
+    if p["doc_names"].get("Electrical"):
+        st.info(f"⚡ `{p['doc_names']['Electrical']}`")
+
+    st.divider()
+
+    if not p["docs"].get("Electrical"):
+        st.info("Upload electrical drawings above.")
+        return
+
+    if st.button("🔍 Analyse electrical", type="primary", key="analyse_elec"):
+        with st.spinner("Scanning electrical drawings for BMS monitoring points..."):
+            result = _analyse_electrical(
+                p["docs"]["Electrical"],
+                p.get("soo_register", {})
+            )
+        p["electrical_data"] = result
+        _save_app_state()
+        st.success(f"✅ {result.get('total',0)} BMS monitoring points found")
+        st.rerun()
+
+    data = p.get("electrical_data", {})
+    if not data.get("equipment"):
+        st.info("No electrical data yet. Click Analyse.")
+        return
+
+    _show_takeoff_results(data, p["name"], source="electrical")
+
+
+# ── Plumbing Tab ───────────────────────────────────────────────────────────────
+def _tab_plumbing(p, soo_loaded):
+    st.markdown("### Plumbing Takeoff")
+    st.caption(
+        "Upload plumbing drawings. Tool finds only items the SOO confirms "
+        "as BMS monitoring scope (DHW heaters, sump pumps, ejectors, booster pumps, etc.)."
+    )
+
+    if not soo_loaded:
+        st.warning("⚠️ Read SOO first — plumbing takeoff is filtered by SOO scope.")
+
+    new_f = st.file_uploader("Plumbing drawings (PDF)", type=["pdf"], key="plumb_upload")
+    if new_f:
+        p["docs"]["Plumbing"]      = new_f.read()
+        p["doc_names"]["Plumbing"] = new_f.name
+        _save_app_state()
+        st.success(f"✅ `{new_f.name}`")
+    if p["doc_names"].get("Plumbing"):
+        st.info(f"🔧 `{p['doc_names']['Plumbing']}`")
+
+    st.divider()
+
+    if not p["docs"].get("Plumbing"):
+        st.info("Upload plumbing drawings above.")
+        return
+
+    if st.button("🔍 Analyse plumbing", type="primary", key="analyse_plumb"):
+        with st.spinner("Scanning plumbing drawings for BMS monitoring points..."):
+            result = _analyse_plumbing(
+                p["docs"]["Plumbing"],
+                p.get("soo_register", {})
+            )
+        p["plumbing_data"] = result
+        _save_app_state()
+        st.success(f"✅ {result.get('total',0)} BMS monitoring points found")
+        st.rerun()
+
+    data = p.get("plumbing_data", {})
+    if not data.get("equipment"):
+        st.info("No plumbing data yet. Click Analyse.")
+        return
+
+    _show_takeoff_results(data, p["name"], source="plumbing")
+
+
+# ── Master Takeoff Tab ─────────────────────────────────────────────────────────
+def _tab_master(p):
+    st.markdown("### Master Takeoff")
+    st.caption(
+        "Merges Schedule + Floor Plan + Riser + Electrical + Plumbing. "
+        "Deduplicates, resolves quantity conflicts, and produces a clean "
+        "client-facing register."
+    )
+
+    # Show what's available
+    sources = {
+        "Schedule":   len(p.get("schedule_data",{}).get("equipment",[])),
+        "Floor Plan": len(p.get("floorplan_data",{}).get("statuses",[])),
+        "Riser":      len(p.get("riser_data",{}).get("equipment",[])),
+        "Electrical": len(p.get("electrical_data",{}).get("equipment",[])),
+        "Plumbing":   len(p.get("plumbing_data",{}).get("equipment",[])),
+    }
+
+    sc = st.columns(5)
+    for i,(src,count) in enumerate(sources.items()):
+        icon = "✅" if count > 0 else "⚪"
+        sc[i].metric(f"{icon} {src}", count)
+
+    ready = sum(1 for v in sources.values() if v > 0)
+    if ready == 0:
+        st.info("Complete at least one analysis tab first.")
+        return
+
+    st.divider()
+
+    if st.button("📊 Generate master takeoff",
+                 type="primary", key="gen_master"):
+        with st.spinner("Merging all sources and deduplicating..."):
+            master = _generate_master(p)
+        p["master_takeoff"] = master
+        # Update main equipment list for point list + estimate
+        p["takeoff"]["equipment"]     = master.get("equipment", [])
+        p["takeoff"]["discrepancies"] = [
+            e for e in master.get("equipment",[])
+            if e.get("soo_status") == "No SOO sequence"
+        ]
+        p["takeoff"]["status"] = "done"
+        _save_app_state()
+        st.success(
+            f"✅ Master takeoff: {len(master.get('equipment',[]))} devices · "
+            f"{master.get('total_qty',0)} total quantity"
+        )
+        st.rerun()
+
+    master = p.get("master_takeoff", {})
+    if not master.get("equipment"):
+        st.info("No master takeoff yet. Click Generate.")
+        return
+
+    # Client-facing table
+    st.markdown("**Client-facing register**")
+    st.caption("Clean format suitable for sharing with client or including in proposal.")
+
+    equip = master.get("equipment", [])
+    client_cols = ["Tag", "System", "Location", "Qty",
+                   "Control Type", "Remarks"]
+    df_client = pd.DataFrame([
+        {
+            "Tag":          e.get("tag",""),
+            "System":       e.get("system",""),
+            "Location":     e.get("floor",""),
+            "Qty":          e.get("qty", 1),
+            "Control Type": e.get("control_type","DDC"),
+            "Remarks":      e.get("remarks",""),
+        }
+        for e in equip
+    ])
+
+    # Filter + sort
+    f1,f2 = st.columns(2)
+    search = f1.text_input("Search", placeholder="FCU, pump, 18th...", key="master_search")
+    sort   = f2.selectbox("Sort by", ["Tag","System","Location","Qty"], key="master_sort")
+    if search:
+        sl = search.lower()
+        df_client = df_client[
+            df_client["Tag"].str.lower().str.contains(sl, na=False) |
+            df_client["System"].str.lower().str.contains(sl, na=False) |
+            df_client["Location"].str.lower().str.contains(sl, na=False)
+        ]
+    df_client = df_client.sort_values(sort)
+
+    st.dataframe(df_client, use_container_width=True,
+                 hide_index=True, height=450)
+
+    # Summary by system
+    st.divider()
+    st.markdown("**Summary by system**")
+    summary = df_client.groupby("System")["Qty"].sum().reset_index()
+    summary.columns = ["System","Total Qty"]
+    summary = summary.sort_values("Total Qty", ascending=False)
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    # Export
+    st.divider()
+    col_e1, col_e2 = st.columns(2)
+    if col_e1.button("⬇ Export client register (Excel)", key="exp_master_client"):
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine="openpyxl") as writer:
+            df_client.to_excel(writer, sheet_name="BMS Register", index=False)
+            summary.to_excel(writer, sheet_name="Summary", index=False)
+        st.download_button(
+            "Download Excel",
+            data=out.getvalue(),
+            file_name=f"BMS_Register_{p['name'].replace(' ','_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_master_excel"
+        )
+
+
+# ── Analysis functions ─────────────────────────────────────────────────────────
+
+def _analyse_soo(soo_bytes, soo_name, api_key_val):
+    """Read SOO and extract BMS scope register."""
+    fname = soo_name.lower()
+    if fname.endswith(".docx"):
+        text = _extract_docx_text(soo_bytes, 12000)
+    else:
+        text = _extract_pdf_text(soo_bytes, 12000)
+
+    prompt = f"""You are a senior BMS controls engineer reading a Sequence of Operations document.
+
+SOO TEXT:
+{text[:10000]}
+
+Extract the following and return ONLY valid JSON:
+{{
+  "systems": [
+    {{
+      "tag": "HWP-74-1,2,3",
+      "system": "Hot Water Pump",
+      "floor": "74th Floor",
+      "control_type": "DDC + VFD BACnet",
+      "scope": "Start/stop, status, speed, fault, DP control",
+      "interface": "Hardwired + BACnet MS/TP"
+    }}
+  ],
+  "exclusions": [
+    {{
+      "item": "Expansion Tanks",
+      "reason": "No BMS monitoring — mechanical only"
+    }}
+  ],
+  "questions": [
+    "Section 3.4 mentions BTU meters but no monitoring sequence provided"
+  ],
+  "io_summary": [
+    {{
+      "system": "Hot Water Pump",
+      "ai": 2, "bi": 2, "ao": 1, "bo": 1, "serial": 4,
+      "total_pts": 10
+    }}
+  ]
+}}
+
+Rules:
+- Only include systems with explicit BMS sequences in the SOO
+- Control type options: DDC, BACnet MS/TP, BACnet IP, Hardwired, Manufacturer standalone, Monitoring only
+- Exclusions = items mentioned but NOT in BMS scope
+- Questions = unclear scope, missing sequences, or ambiguous control requirements
+- Return ONLY the JSON, no other text"""
+
+    raw = _claude(api_key_val, prompt, 4000) or ""
+    try:
+        clean = raw.strip()
+        if "```" in clean:
+            parts = clean.split("```")
+            clean = parts[1] if len(parts) > 1 else clean
+            if clean.startswith("json"): clean = clean[4:]
+        s = clean.find("{"); e = clean.rfind("}")
+        if s != -1 and e > s:
+            return json.loads(clean[s:e+1])
+    except Exception:
+        pass
+    return {"systems":[],"exclusions":[],"questions":[f"Parse error: {raw[:200]}"],"io_summary":[]}
+
+
+def _analyse_schedule(sched_bytes, soo_register):
+    """Extract BMS-relevant devices from mechanical schedule PDF."""
+    import fitz, re
+
+    # BMS-relevant device types (filtered against common non-BMS items)
+    BMS_PREFIXES = {
+        "WSHP":  ("Water Source Heat Pump",     "BACnet MS/TP"),
+        "ASHP":  ("Air Source Heat Pump",        "BACnet IP"),
+        "AHU":   ("Air Handling Unit",           "DDC"),
+        "FCU":   ("Fan Coil Unit",               "DDC"),
+        "ERU":   ("Energy Recovery Unit",        "DDC"),
+        "ERV":   ("Energy Recovery Ventilator",  "BACnet MS/TP"),
+        "DOAS":  ("DOAS Unit",                   "DDC"),
+        "MAU":   ("Make Up Air Unit",            "DDC"),
+        "HV":    ("Heating & Ventilating Unit",  "DDC"),
+        "ACU":   ("Air Conditioning Unit",       "BACnet MS/TP"),
+        "AC":    ("Air Conditioning Unit",       "BACnet MS/TP"),
+        "WCCU":  ("Water Cooled Condensing Unit","BACnet MS/TP"),
+        "HWP":   ("Hot Water Pump",              "DDC + VFD"),
+        "CHWP":  ("Chilled Water Pump",          "DDC + VFD"),
+        "PCHWP": ("Primary CHW Pump",            "DDC + VFD"),
+        "SCHWP": ("Secondary CHW Pump",          "DDC + VFD"),
+        "PHWP":  ("Primary HW Pump",             "DDC + VFD"),
+        "SHWP":  ("Secondary HW Pump",           "DDC + VFD"),
+        "SCWP":  ("Secondary CW Pump",           "DDC + VFD"),
+        "TCWP":  ("Tertiary CW Pump",            "DDC + VFD"),
+        "SMP":   ("Snow Melt Pump",              "DDC"),
+        "PFHX":  ("Plate & Frame HX",            "Monitoring"),
+        "STHX":  ("Steam HX",                    "Monitoring"),
+        "SPF":   ("Stair Pressurization Fan",    "DDC"),
+        "PFSP":  ("Post-Fire Smoke Purge Fan",   "DDC"),
+        "EF":    ("Exhaust Fan",                 "DDC"),
+        "SF":    ("Supply Fan",                  "DDC"),
+        "TX":    ("Toilet Exhaust Fan",          "DDC"),
+        "TRX":   ("Trash Exhaust Fan",           "Monitoring"),
+        "SVF":   ("Stair Ventilation Fan",       "DDC"),
+        "EP":    ("Elevator Pressurization Fan", "DDC"),
+        "VAV":   ("VAV Terminal Box",            "DDC"),
+        "FTR":   ("Fin Tube Radiation",          "DDC"),
+        "HWC":   ("Hot Water Coil",              "DDC"),
+    }
+
+    # Non-BMS items to exclude
+    EXCLUDE_PREFIXES = ["ET-","AS-","STHX-","PFHX-"]
+
+    try:
+        doc = fitz.open(stream=sched_bytes, filetype="pdf")
+        full_text = "\n".join(page.get_text() for page in doc)
+    except Exception as e:
+        return {"equipment":[],"total_devices":0,"bms_scope":0,
+                "flagged":0,"error":str(e)}
+
+    # Extract tags with quantity handling
+    # Matches: WSHP-18-1,2,3 or HWP-74-1,2,3,4 or AHU-5-1 TO AHU-5-3
+    TAG_RE = re.compile(
+        r'\b((?:' + '|'.join(BMS_PREFIXES.keys()) + r')'
+        r'-[\w-]+(?:\s*(?:TO|,)\s*[\w-]+)*)',
+        re.IGNORECASE
+    )
+
+    # Floor extraction from tag
+    FLOOR_MAP = {
+        "SC": "Sub-Cellar", "C": "Cellar",
+        "1": "1st Floor", "5": "5th Floor",
+        "18": "18th Floor", "19": "19th Floor",
+        "20": "20th Floor", "21": "21st Floor",
+        "38": "38th Floor", "61": "61st Floor",
+        "74": "74th Floor", "76": "76th Floor",
+    }
+
+    def parse_qty(tag_str):
+        """Parse quantity from tag range like WSHP-18-1,2,3 or HWP-74-1 TO HWP-74-4."""
+        if " TO " in tag_str.upper():
+            parts = re.findall(r'\d+$', tag_str.split("TO")[0].strip())
+            parts2 = re.findall(r'\d+$', tag_str.split("TO")[-1].strip())
+            if parts and parts2:
+                try:
+                    return abs(int(parts2[0]) - int(parts[0])) + 1
+                except: pass
+        commas = tag_str.count(",")
+        return commas + 1
+
+    def base_tag(tag_str):
+        """Get clean base tag like WSHP-18-1,2,3 → WSHP-18"""
+        clean = re.split(r',|\s+TO\s+', tag_str, flags=re.IGNORECASE)[0].strip()
+        return clean
+
+    def get_floor(tag):
+        parts = tag.upper().split("-")
+        if len(parts) >= 2:
+            return FLOOR_MAP.get(parts[1], parts[1] + "th Floor")
+        return "Unknown"
+
+    def get_prefix(tag):
+        for prefix in sorted(BMS_PREFIXES.keys(), key=len, reverse=True):
+            if tag.upper().startswith(prefix):
+                return prefix
+        return None
+
+    # Get SOO confirmed systems for filtering
+    soo_systems = set()
+    for s in soo_register.get("systems", []):
+        # Extract prefix from SOO tag
+        t = s.get("tag","").upper().split("-")[0]
+        soo_systems.add(t)
+
+    seen = {}
+    flagged = 0
+
+    for match in TAG_RE.finditer(full_text):
+        tag_str = match.group(0).strip()
+        btag    = base_tag(tag_str)
+        prefix  = get_prefix(btag)
+        if not prefix: continue
+
+        # Skip non-BMS
+        skip = False
+        for ex in EXCLUDE_PREFIXES:
+            if btag.upper().startswith(ex.upper()): skip = True
+        if skip: continue
+
+        qty = parse_qty(tag_str)
+        floor = get_floor(btag)
+        system, ctrl = BMS_PREFIXES.get(prefix, ("Unknown","DDC"))
+
+        # SOO status
+        if soo_systems:
+            soo_status = "SOO confirmed" if prefix in soo_systems else "Verify with SOO"
+        else:
+            soo_status = "SOO not loaded"
+
+        # Flag "see floor plan"
+        context = full_text[max(0,match.start()-100):match.end()+100].lower()
+        fp_flag = "see floor plan" in context or "see plan" in context
+
+        key = btag.upper()
+        if key not in seen:
+            seen[key] = {
+                "tag":          btag,
+                "tag_range":    tag_str,
+                "system":       system,
+                "floor":        floor,
+                "qty":          qty,
+                "control_type": ctrl,
+                "soo_status":   soo_status,
+                "fp_flag":      "⚠ See floor plan" if fp_flag else "",
+                "source":       "Schedule",
+                "remarks":      "",
+                "soo_confirmed": soo_status == "SOO confirmed",
+                "discrepancy_flag": soo_status == "Verify with SOO",
+                "classification":  system,
+                "bms_interface_default": ctrl,
+            }
+        else:
+            # Update qty if higher
+            if qty > seen[key]["qty"]:
+                seen[key]["qty"] = qty
+
+        if fp_flag: flagged += 1
+
+    equipment = list(seen.values())
+    bms_scope = len([e for e in equipment if "SOO confirmed" in e["soo_status"]])
+
+    return {
+        "equipment":     equipment,
+        "total_devices": len(equipment),
+        "bms_scope":     bms_scope,
+        "flagged":       flagged,
+    }
+
+
+def _analyse_riser(water_bytes, air_bytes, soo_register):
+    """Extract labeled devices from riser diagrams."""
+    import fitz, re
+
+    RISER_DEVICES = {
+        "BTU":  ("BTU Meter",           "BACnet Modbus"),
+        "FM":   ("Flow Meter",           "BACnet Modbus"),
+        "DPS":  ("DP Sensor",            "Hardwired AI"),
+        "DP":   ("Differential Pressure","Hardwired AI"),
+        "TS":   ("Temperature Sensor",   "Hardwired AI"),
+        "PS":   ("Pressure Sensor",      "Hardwired AI"),
+        "VS":   ("Vibration Sensor",     "Hardwired AI"),
+        "CV":   ("Control Valve",        "Hardwired AO"),
+        "MOV":  ("Motorized Valve",      "Hardwired BO"),
+        "BV":   ("Ball Valve (motorized)","Hardwired BO"),
+        "FLV":  ("Flow Control Valve",   "Hardwired AO"),
+    }
+
+    TAG_RE = re.compile(
+        r'\b((?:' + '|'.join(RISER_DEVICES.keys()) + r')-[\w-]+)',
+        re.IGNORECASE
+    )
+
+    equipment = {}
+    flagged   = 0
+
+    for label, pdf_bytes in [("Water Riser", water_bytes),
+                               ("Air Riser",   air_bytes)]:
+        if not pdf_bytes: continue
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            text = "\n".join(page.get_text() for page in doc)
+        except Exception:
+            continue
+
+        for match in TAG_RE.finditer(text):
+            tag = match.group(0).strip().upper()
+            prefix = tag.split("-")[0]
+            system, ctrl = RISER_DEVICES.get(prefix, ("Unknown","Hardwired"))
+
+            # Simple floor from tag
+            parts = tag.split("-")
+            floor = parts[1] + "th Floor" if len(parts) > 1 else "Unknown"
+
+            if tag not in equipment:
+                equipment[tag] = {
+                    "tag":          tag,
+                    "tag_range":    tag,
+                    "system":       system,
+                    "floor":        floor,
+                    "qty":          1,
+                    "control_type": ctrl,
+                    "soo_status":   "Verify with SOO",
+                    "fp_flag":      "",
+                    "source":       label,
+                    "remarks":      "From riser diagram",
+                    "soo_confirmed": False,
+                    "discrepancy_flag": False,
+                    "classification":   system,
+                    "bms_interface_default": ctrl,
+                }
+
+    eq_list = list(equipment.values())
+    return {
+        "equipment": eq_list,
+        "total":     len(eq_list),
+        "flagged":   flagged,
+    }
+
+
+def _analyse_electrical(elec_bytes, soo_register):
+    """Find electrical items confirmed in SOO as BMS monitoring scope."""
+    import fitz, re
+
+    ELEC_DEVICES = {
+        "GEN":  ("Emergency Generator",    "Monitoring - dry contact"),
+        "ATS":  ("Auto Transfer Switch",   "Monitoring - dry contact"),
+        "UPS":  ("UPS System",             "Monitoring - dry contact"),
+        "EM":   ("Electric Meter",         "BACnet Modbus"),
+        "HTR":  ("Heat Trace",             "Monitoring - dry contact"),
+        "XFMR": ("Transformer",            "Monitoring"),
+        "MCC":  ("Motor Control Center",   "Monitoring"),
+        "SWB":  ("Switchboard",            "Monitoring - dry contact"),
+        "INV":  ("Inverter",               "Monitoring - dry contact"),
+    }
+
+    TAG_RE = re.compile(
+        r'\b((?:' + '|'.join(ELEC_DEVICES.keys()) + r')-[\w-]+)',
+        re.IGNORECASE
+    )
+
+    soo_scope = set()
+    for s in soo_register.get("systems", []):
+        t = s.get("tag","").upper().split("-")[0]
+        soo_scope.add(t)
+
+    try:
+        doc = fitz.open(stream=elec_bytes, filetype="pdf")
+        text = "\n".join(page.get_text() for page in doc)
+    except Exception as e:
+        return {"equipment":[],"total":0,"error":str(e)}
+
+    equipment = {}
+    for match in TAG_RE.finditer(text):
+        tag    = match.group(0).strip().upper()
+        prefix = tag.split("-")[0]
+        if prefix not in soo_scope and soo_scope:
+            continue  # Not in SOO scope
+        system, ctrl = ELEC_DEVICES.get(prefix, ("Electrical Device","Monitoring"))
+        if tag not in equipment:
+            equipment[tag] = {
+                "tag":          tag,
+                "tag_range":    tag,
+                "system":       system,
+                "floor":        "See drawings",
+                "qty":          1,
+                "control_type": ctrl,
+                "soo_status":   "SOO confirmed" if prefix in soo_scope else "Verify",
+                "source":       "Electrical",
+                "remarks":      "BMS monitoring scope",
+                "soo_confirmed": True,
+                "discrepancy_flag": False,
+                "classification":   system,
+                "bms_interface_default": ctrl,
+            }
+
+    eq_list = list(equipment.values())
+    return {"equipment": eq_list, "total": len(eq_list)}
+
+
+def _analyse_plumbing(plumb_bytes, soo_register):
+    """Find plumbing items confirmed in SOO as BMS monitoring scope."""
+    import fitz, re
+
+    PLUMB_DEVICES = {
+        "DHW":  ("Domestic Hot Water Heater","Monitoring - leak/status"),
+        "EWH":  ("Electric Water Heater",    "Monitoring - leak"),
+        "WH":   ("Water Heater",             "Monitoring - leak"),
+        "SP":   ("Sump Pump",                "Monitoring - status"),
+        "EP":   ("Ejector Pump",             "Monitoring - status"),
+        "BP":   ("Booster Pump",             "DDC - start/stop/status"),
+        "RP":   ("Recirculation Pump",       "Monitoring - status"),
+        "PRV":  ("Pressure Reducing Valve",  "Monitoring"),
+        "WM":   ("Water Meter",              "BACnet Modbus"),
+        "RPZ":  ("RPZ Backflow Preventer",   "Monitoring"),
+    }
+
+    TAG_RE = re.compile(
+        r'\b((?:' + '|'.join(PLUMB_DEVICES.keys()) + r')-[\w-]+)',
+        re.IGNORECASE
+    )
+
+    soo_scope = set()
+    for s in soo_register.get("systems", []):
+        t = s.get("tag","").upper().split("-")[0]
+        soo_scope.add(t)
+
+    try:
+        doc = fitz.open(stream=plumb_bytes, filetype="pdf")
+        text = "\n".join(page.get_text() for page in doc)
+    except Exception as e:
+        return {"equipment":[],"total":0,"error":str(e)}
+
+    equipment = {}
+    for match in TAG_RE.finditer(text):
+        tag    = match.group(0).strip().upper()
+        prefix = tag.split("-")[0]
+        system, ctrl = PLUMB_DEVICES.get(prefix, ("Plumbing Device","Monitoring"))
+        if tag not in equipment:
+            equipment[tag] = {
+                "tag":          tag,
+                "tag_range":    tag,
+                "system":       system,
+                "floor":        "See drawings",
+                "qty":          1,
+                "control_type": ctrl,
+                "soo_status":   "SOO confirmed" if prefix in soo_scope else "Verify",
+                "source":       "Plumbing",
+                "remarks":      "BMS monitoring scope",
+                "soo_confirmed": True,
+                "discrepancy_flag": False,
+                "classification":   system,
+                "bms_interface_default": ctrl,
+            }
+
+    eq_list = list(equipment.values())
+    return {"equipment": eq_list, "total": len(eq_list)}
+
+
+def _generate_master(p):
+    """Merge all takeoff sources into master register."""
+    from collections import defaultdict
+
+    all_equip = {}
+
+    # Source priority: Floor Plan > Schedule > Riser > Electrical > Plumbing
+    sources = [
+        ("Plumbing",   p.get("plumbing_data",{}).get("equipment",[])),
+        ("Electrical", p.get("electrical_data",{}).get("equipment",[])),
+        ("Riser",      p.get("riser_data",{}).get("equipment",[])),
+        ("Schedule",   p.get("schedule_data",{}).get("equipment",[])),
+        ("Floor Plan", [
+            {"tag": r["Tag"], "system": r.get("System",""),
+             "floor": r.get("Pages",""), "qty": 1,
+             "control_type": "DDC", "soo_status": r.get("Status",""),
+             "source": "Floor Plan", "remarks": ""}
+            for r in p.get("floorplan_data",{}).get("statuses",[])
+            if r.get("Color") in ("green","amber","blue")
+        ]),
+    ]
+
+    for source_name, equip_list in sources:
+        for e in equip_list:
+            tag = e.get("tag","").upper()
+            if not tag: continue
+            if tag not in all_equip:
+                all_equip[tag] = dict(e)
+                all_equip[tag]["sources"] = [source_name]
+            else:
+                # Update qty if floor plan source (higher priority)
+                if source_name == "Floor Plan":
+                    all_equip[tag]["qty"] = e.get("qty", all_equip[tag]["qty"])
+                all_equip[tag]["sources"].append(source_name)
+
+    # Build final list
+    final = []
+    for tag, e in sorted(all_equip.items()):
+        sources_str = " + ".join(dict.fromkeys(e.get("sources",[])))
+        # Panel name: CP-[SYSTEM PREFIX]
+        prefix = tag.split("-")[0] if "-" in tag else tag[:4]
+        panel  = f"CP-{e.get('system','').replace(' ','_').upper()[:8]}"
+
+        final.append({
+            "tag":          e.get("tag",""),
+            "tag_range":    e.get("tag_range", e.get("tag","")),
+            "system":       e.get("system",""),
+            "floor":        e.get("floor",""),
+            "qty":          e.get("qty",1),
+            "control_type": e.get("control_type","DDC"),
+            "panel":        panel,
+            "soo_status":   e.get("soo_status",""),
+            "source":       sources_str,
+            "remarks":      e.get("remarks",""),
+            "soo_confirmed":    e.get("soo_confirmed", False),
+            "discrepancy_flag": e.get("discrepancy_flag", False),
+            "classification":   e.get("classification", e.get("system","")),
+            "bms_interface_default": e.get("bms_interface_default", e.get("control_type","DDC")),
+        })
+
+    total_qty = sum(e["qty"] for e in final)
+    return {"equipment": final, "total_qty": total_qty}
+
+
+# ── Shared helpers ─────────────────────────────────────────────────────────────
+
+def _show_takeoff_results(data, proj_name, source=""):
+    """Show equipment table with metrics and export."""
+    equip = data.get("equipment", [])
+    if not equip:
+        st.info("No devices found.")
+        return
+
+    # Metrics
+    total = len(equip)
+    total_qty = sum(e.get("qty",1) for e in equip)
+    confirmed = sum(1 for e in equip if e.get("soo_status","") == "SOO confirmed")
+    flagged   = sum(1 for e in equip if e.get("fp_flag",""))
+
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("Device types", total)
+    m2.metric("Total qty",    total_qty)
+    m3.metric("SOO confirmed",confirmed)
+    if flagged:
+        m4.metric("⚠ See floor plan", flagged)
+
+    # Table
+    display_cols = ["tag","system","floor","qty","control_type","soo_status","fp_flag","source"]
+    df = pd.DataFrame([{c: e.get(c,"") for c in display_cols} for e in equip])
+    df.columns = ["Tag","System","Floor","Qty","Control Type","SOO Status","FP Flag","Source"]
+
+    # Filter
+    search = st.text_input("Filter", placeholder="Search tag or system...",
+                            key=f"filter_{source}")
+    if search:
+        sl = search.lower()
+        df = df[df["Tag"].str.lower().str.contains(sl,na=False) |
+                df["System"].str.lower().str.contains(sl,na=False)]
+
+    st.dataframe(df, use_container_width=True, hide_index=True, height=400)
+
+    _export_btn(df, f"{source}_takeoff", proj_name, key=f"exp_{source}_data")
+
+
+def _export_btn(df, filename, proj_name, key="exp_generic"):
+    """Reusable Excel export button."""
+    if st.button(f"⬇ Export to Excel", key=key):
+        out = io.BytesIO()
+        df.to_excel(out, index=False)
+        st.download_button(
+            "Download Excel",
+            data=out.getvalue(),
+            file_name=f"{filename}_{proj_name.replace(' ','_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_{key}"
+        )
+
+
+
 def module_point_list(p):
     st.markdown("### Point list")
     client  = p.get("client")
