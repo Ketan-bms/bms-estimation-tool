@@ -1,0 +1,148 @@
+BMS ESTIMATION TOOL — FILE INVENTORY (as of July 29, 2026)
+========================================================================
+
+CORE APPLICATION
+├── app.py (3694 lines)
+│   ├── Main Streamlit app with 5 tabs
+│   ├── Updated ai_point_list() function (BMS-specific columns)
+│   ├── Updated module_point_list() UI (better diagnostics)
+│   └── Import: from point_list_extractor import ...
+│
+├── requirements.txt
+│   └── Dependencies: streamlit, pandas, openpyxl, anthropic, pymupdf, etc.
+│
+└── README.md
+    └── Project overview and quick start
+
+NEW MODULES (SOO Reader + Point List)
+├── point_list_extractor.py (350 lines) ⭐ NEW
+│   ├── generate_point_list_prompt() → Creates Claude prompt
+│   ├── parse_point_list_response() → Parses JSON + infers I/O
+│   └── infer_io_type() → Auto-detects AI/BI/AO/BO/Serial_Pt
+│
+├── test_soo_extraction.py (115 lines) ⭐ NEW
+│   ├── Tests SOO text extraction with PyMuPDF
+│   ├── Tests I/O type inference on sample data
+│   ├── Validates JSON structure
+│   └── Run: python test_soo_extraction.py ✅
+│
+└── test_integration.py (270 lines) ⭐ NEW
+    ├── Full end-to-end integration test
+    ├── Mock Claude response simulation
+    ├── Validates prompt generation
+    ├── Validates response parsing
+    ├── Validates all 11 columns present
+    ├── Tests I/O inference accuracy
+    └── Run: python test_integration.py ✅ (ALL TESTS PASSING)
+
+SUPPORTING MODULES (Pre-existing)
+├── pdf_takeoff.py (340 lines)
+│   ├── PDF text-layer extraction (PyMuPDF)
+│   ├── Device tag detection
+│   └── Takeoff to session format conversion
+│
+├── drawing_markup.py (520 lines)
+│   ├── PDF annotation and markup
+│   ├── Visual feedback for discrepancies
+│   └── Markup UI integration
+│
+├── markup_ui.py (520 lines)
+│   ├── Interactive review UI for marked-up PDFs
+│   ├── Discrepancy flagging
+│   └── Issue resolution workflow
+│
+├── material_module.py (600 lines)
+│   ├── Material estimation (Honeywell price book)
+│   ├── BOM generation
+│   ├── Cost rollup
+│   └── Labor rate management
+│
+├── discrepancy_check.py (360 lines)
+│   ├── Cross-check engine (takeoff × SOO × schedule)
+│   ├── Discrepancy detection (spec, tag, quantity mismatches)
+│   ├── Priority scoring (HIGH/MED/LOW)
+│   └── JSON report generation
+│
+└── schedule_extractor.py (550 lines)
+    ├── M-200 series mechanical schedule PDF extraction
+    ├── Device tag + quantity parsing
+    ├── Floor/zone identification
+    └── Ground truth JSON export
+
+DATA & REFERENCE FILES
+├── pricebook_honeywell.json (1.4 MB)
+│   ├── 200-item Honeywell BMS component catalog
+│   ├── Unit costs, lead times, descriptions
+│   └── Used by material_module.py
+│
+├── soo_refs.json (2 KB)
+│   ├── West 34th Street Hotel device tags (109 items)
+│   ├── System tags by category (ASHP, DOAS, FCU, etc.)
+│   ├── Sequence descriptions
+│   └── Reference for SOO validation
+│
+├── schedule_ground_truth.json (56 KB)
+│   ├── Extracted M-200 series schedule data
+│   ├── Device tags + quantities by floor
+│   ├── Ground truth for discrepancy checking
+│   └── Used by discrepancy_check.py
+│
+└── discrepancy_report.json (20 KB)
+    ├── Sample output: cross-check results
+    ├── Flagged discrepancies with severity
+    └── Resolution paths
+
+DOCUMENTATION (NEW)
+├── NEXT_STEPS.md ⭐ NEW
+│   ├── How to test SOO reader + point list
+│   ├── Local and live testing options
+│   ├── Column reference guide
+│   ├── I/O type inference rules
+│   ├── Troubleshooting checklist
+│   └── Example outputs
+│
+├── IMPLEMENTATION_SUMMARY.md ⭐ NEW
+│   ├── Detailed change log
+│   ├── Architecture diagram
+│   ├── Column mapping table
+│   ├── I/O inference logic
+│   ├── Deployment checklist
+│   ├── Known behaviors & edge cases
+│   └── Testing results (all ✅)
+│
+├── HANDOFF.md ⭐ NEW
+│   ├── Quick reference (2-min read)
+│   ├── Immediate next steps
+│   ├── Column changes summary
+│   ├── Demo narrative
+│   └── Troubleshooting quick ref
+│
+├── FILE_INVENTORY.txt ⭐ NEW
+│   └── This file — complete file listing
+
+PREVIOUS SESSION NOTES
+└── (In memory; see user context for details)
+    ├── Architecture decisions: Text-layer search (not OCR)
+    ├── Confidence model: DDC classification by source corroboration
+    ├── Demo sequence: Spine (takeoff) → Discrepancy catch (unit heaters)
+    ├── Key learnings: Manual OCR approaches underperform (~30% recall)
+    └── Scope control: Hold line against out-of-scope features
+
+========================================================================
+TOTAL FILES: 17 core + 6 new = 23 tracked files
+TOTAL LINES: ~8,500 Python + ~1,000 markdown
+
+DEPLOYMENT STATUS: ✅ READY TO DEPLOY
+- All tests passing
+- No syntax errors
+- All imports correct
+- Documentation complete
+- Handoff checklist prepared
+
+========================================================================
+KEY PATHS
+├── Uploads → /mnt/project/
+├── App runs → streamlit run app.py
+├── Tests run → python test_*.py
+├── Secrets → Streamlit Cloud dashboard (ANTHROPIC_API_KEY)
+└── GitHub → Ketan-bms/bms-estimation-tool (main branch)
