@@ -234,6 +234,77 @@ def parse_point_list_response(raw_response):
     return rows
 
 
+def generate_appendix_prompt(project_name, soo_text, main_point_list_equip):
+    """
+    Generate prompt for SOO Appendix points (fire safety, future expansion, etc.)
+    Organized system-wise.
+    
+    Args:
+        project_name: Project name
+        soo_text: SOO text (usually 5000+ chars)
+        main_point_list_equip: List of equipment already in main point list
+    
+    Returns:
+        Prompt string
+    """
+    
+    main_equip_str = ", ".join(set(main_point_list_equip)) if main_point_list_equip else "None yet"
+    
+    example_appendix = {
+        "Panel Name": "MER-DDC-1",
+        "Equipment": "PFSP-1M-1",
+        "Point Name": "Post-Fire Smoke Purge Enable",
+        "Control Device": "Fire Alarm Interface",
+        "AI": "",
+        "BI": "",
+        "AO": "",
+        "BO": "x",
+        "Serial_Pt": "",
+        "Terms": "OUT-5",
+        "Remarks": "Activated by fire alarm system; special sequence"
+    }
+    
+    prompt = f"""You are a senior BMS engineer extracting Appendix points from an SOO.
+
+PROJECT: {project_name}
+
+Equipment already in main point list: {main_equip_str}
+
+SEQUENCE OF OPERATIONS:
+{soo_text}
+
+APPENDIX POINT LIST (extract points NOT in main list):
+
+OUTPUT RULES:
+1. Extract only ADDITIONAL points from SOO that fall into these categories:
+   - Post-fire smoke purge sequences (PFSP, GX, SPF, HPF systems)
+   - Life safety / emergency pressurization (stair pressurization, hoistway)
+   - Future expansion or placeholder points
+   - Special integrations (Fire alarm interface, Backup power monitoring)
+   - Historical/archived sequences not in main scope
+   - Points with special commissioning or start-up requirements
+
+2. Do NOT repeat equipment already listed. These are truly supplementary.
+
+3. Return JSON array with 11 columns (same as main point list):
+   - Panel Name, Equipment, Point Name, Control Device
+   - AI, BI, AO, BO, Serial_Pt (use "x" if present)
+   - Terms, Remarks
+
+4. Mark each row with system category in Remarks (e.g., "Fire safety sequence", "Future expansion", "Emergency interlock")
+
+5. If no appendix points found, return empty array [].
+
+CRITICAL: Start response with [ and end with ]. No markdown, no code fences.
+
+Example row:
+{json.dumps([example_appendix])}
+
+Extract APPENDIX points from the SOO above:"""
+    
+    return prompt
+
+
 if __name__ == "__main__":
     # Test the prompt generation and parsing
     print("Point List Extractor Module")
