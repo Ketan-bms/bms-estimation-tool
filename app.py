@@ -1586,45 +1586,6 @@ def _tab_soo(p):
                             st.write(f"• {item}")
             else:
                 st.json(notes)
-    r_tab1, r_tab2, r_tab3, r_tab4 = st.tabs([
-        "✅ Confirmed scope",
-        "❌ Exclusions",
-        "❓ Questions / gaps",
-        "📋 I/O summary"
-    ])
-
-    with r_tab1:
-        systems = reg.get("systems", [])
-        st.markdown(f"**{len(systems)} systems confirmed in BMS scope**")
-        if systems:
-            df = pd.DataFrame(systems)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            _export_btn(df, "soo_confirmed", p["name"], key="exp_soo_conf")
-
-    with r_tab2:
-        excl = reg.get("exclusions", [])
-        if excl:
-            df = pd.DataFrame(excl)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No explicit exclusions found.")
-
-    with r_tab3:
-        qs = reg.get("questions", [])
-        if qs:
-            for q in qs:
-                st.warning(f"❓ {q}")
-        else:
-            st.success("No gaps or questions found.")
-
-    with r_tab4:
-        io_summary = reg.get("io_summary", [])
-        if io_summary:
-            df = pd.DataFrame(io_summary)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            _export_btn(df, "soo_io_summary", p["name"], key="exp_soo_io")
-        else:
-            st.info("No I/O tables extracted.")
 
 
 # ── Schedule Tab ──────────────────────────────────────────────────────────────
