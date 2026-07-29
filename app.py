@@ -9,14 +9,6 @@ from material_module import module_material, init_pricebooks
 from markup_ui import module_markup
 from pdf_takeoff import run_pdf_takeoff, takeoff_to_session_format
 from point_list_extractor import generate_point_list_prompt, parse_point_list_response, infer_io_type
-from soo_extractor import (
-    generate_overview_prompt,
-    generate_pointlist_prompt,
-    generate_appendix_prompt,
-    generate_important_notes_prompt,
-    parse_pointlist_response,
-    parse_notes_response
-)
 from pathlib import Path
 from datetime import date
 from collections import defaultdict
@@ -1387,7 +1379,11 @@ def _tab_soo(p):
     with col1:
         if st.button("📋 Overview", key="btn_overview", use_container_width=True):
             with st.spinner("Extracting overview..."):
-                from soo_extractor import generate_overview_prompt
+                try:
+                    from soo_extractor import generate_overview_prompt
+                except ImportError as e:
+                    st.error(f"❌ Cannot load soo_extractor: {e}")
+                    return
                 prompt = generate_overview_prompt(p.get("name", "Project"), soo_text)
                 raw = _claude(k, prompt, max_tokens=2000)
                 if raw:
