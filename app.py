@@ -8,6 +8,15 @@ import json, os, io, base64
 from material_module import module_material, init_pricebooks
 from markup_ui import module_markup
 from pdf_takeoff import run_pdf_takeoff, takeoff_to_session_format
+from point_list_extractor import generate_point_list_prompt, parse_point_list_response, infer_io_type
+from soo_extractor import (
+    generate_overview_prompt,
+    generate_pointlist_prompt,
+    generate_appendix_prompt,
+    generate_important_notes_prompt,
+    parse_pointlist_response,
+    parse_notes_response
+)
 from pathlib import Path
 from datetime import date
 from collections import defaultdict
@@ -148,6 +157,7 @@ def new_project(name, client, bid_date, address):
         "docs":{},"doc_names":{},
         "takeoff":{"equipment":[],"discrepancies":[],"status":"not_started"},
         "point_list":{"rows":[],"status":"not_started"},
+        "point_list_appendix":{"rows":[],"status":"not_started"},
         "estimate":{"lines":[],"rates":{},"markup":10,"status":"not_started"},
         "proposal":{"text":"","status":"not_started"},
     }
@@ -1318,70 +1328,268 @@ def module_takeoff(p):
 
 # ── SOO Tab ───────────────────────────────────────────────────────────────────
 def _tab_soo(p):
-    st.markdown("### SOO Reader")
-    st.caption(
-        "Upload the Sequence of Operations PDF. "
-        "Click Analyse to extract confirmed BMS scope, control types, "
-        "exclusions, and I/O points. This register filters all other takeoff tabs."
-    )
-
-    # Upload
-    soo_bytes = p["docs"].get("SOO")
-    soo_name  = p["doc_names"].get("SOO", "")
-
-    col_up, col_info = st.columns([1, 2])
-    with col_up:
-        new_soo = st.file_uploader(
-            "Upload SOO (PDF or DOCX)",
-            type=["pdf", "docx"],
-            key="soo_upload_tab"
-        )
-        if new_soo:
-            p["docs"]["SOO"]      = new_soo.read()
-            p["doc_names"]["SOO"] = new_soo.name
-            soo_bytes = p["docs"]["SOO"]
-            soo_name  = new_soo.name
-            _save_app_state()
-            st.success(f"✅ Uploaded: `{soo_name}`")
-
-    with col_info:
-        if soo_bytes:
-            size = round(len(soo_bytes)/1024/1024, 1)
-            st.info(f"📄 `{soo_name}` · {size} MB loaded")
-        else:
-            st.warning("No SOO uploaded yet.")
-
-    st.divider()
-
-    # Analyse button
-    if not soo_bytes:
-        st.info("Upload the SOO above to enable analysis.")
+    """SOO extraction with 5 buttons: Overview, Proposal, Point List, Appendix, Notes"""
+    
+    st.markdown("### 📋 Sequence of Operations (SOO) Processing")
+    st.markdown("""
+    Upload your SOO PDF/DOCX and extract:
+    - **Overview:** Bird's eye view of control approach per system
+    - **Proposal:** Generate DOCX proposal (you provide template)
+    - **Point List:** Main BMS points in Excel format (11 columns)
+    - **Appendix:** Special sequences (fire safety, emergency, future)
+    - **Important Notes:** Key estimation points
+    """)
+    
+    # ── File Upload ────────────────────────────────────────────────────────────
+    uploaded_file = st.file_uploader("Upload SOO PDF or DOCX", type=["pdf", "docx"], key="soo_upload")
+    
+    if not uploaded_file:
+        st.info("👆 Upload a SOO document to begin analysis")
         return
-
-    if st.button("🔍 Read SOO & build scope register",
-                 type="primary", key="analyse_soo"):
-        k = api_key()
-        if not k:
-            st.error("Add Anthropic API key in the sidebar.")
-        else:
-            with st.spinner("Reading SOO — extracting systems, control types, I/O tables..."):
-                register = _analyse_soo(p["docs"]["SOO"],
-                                        p["doc_names"].get("SOO",""), k)
-            p["soo_register"] = register
-            _save_app_state()
-            st.success(
-                f"✅ {len(register.get('systems',[]))} systems confirmed · "
-                f"{len(register.get('exclusions',[]))} exclusions · "
-                f"{len(register.get('questions',[]))} questions"
-            )
-            st.rerun()
-
-    reg = p.get("soo_register", {})
-    if not reg.get("systems"):
-        st.info("No SOO analysis yet. Click 'Read SOO' above.")
+    
+    # ── Extract SOO Text ───────────────────────────────────────────────────────
+    soo_bytes = uploaded_file.read()
+    fname = uploaded_file.name.lower()
+    
+    if fname.endswith(".docx"):
+        soo_text = _extract_docx_text(soo_bytes, 15000)
+    else:
+        soo_text = _extract_pdf_text(soo_bytes, 15000)
+    
+    if not soo_text:
+        st.error("Could not extract text from SOO document")
         return
-
-    # Show register
+    
+    st.success(f"✅ Loaded: {uploaded_file.name} ({len(soo_text)} chars)")
+    
+    # Initialize SOO state
+    if "soo_data" not in p:
+        p["soo_data"] = {
+            "overview": None,
+            "proposal": None,
+            "point_list": None,
+            "appendix": None,
+            "important_notes": None
+        }
+    
+    # ── 5 Extraction Buttons ───────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Extract from SOO:")
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    k = api_key()
+    if not k:
+        st.error("❌ No API key. Set ANTHROPIC_API_KEY in Streamlit Secrets.")
+        return
+    
+    # ── Button 1: Overview ─────────────────────────────────────────────────────
+    with col1:
+        if st.button("📋 Overview", key="btn_overview", use_container_width=True):
+            with st.spinner("Extracting overview..."):
+                from soo_extractor import generate_overview_prompt
+                prompt = generate_overview_prompt(p.get("name", "Project"), soo_text)
+                raw = _claude(k, prompt, max_tokens=2000)
+                if raw:
+                    try:
+                        data = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
+                        p["soo_data"]["overview"] = data
+                        _save_app_state()
+                        st.success("✅ Overview extracted")
+                        st.rerun()
+                    except:
+                        st.warning("Could not parse response")
+    
+    # ── Button 2: Proposal ─────────────────────────────────────────────────────
+    with col2:
+        if st.button("📄 Proposal", key="btn_proposal", use_container_width=True):
+            st.info("🔗 Upload your proposal template below")
+    
+    # ── Button 3: Point List ───────────────────────────────────────────────────
+    with col3:
+        if st.button("📊 Point List", key="btn_pointlist", use_container_width=True):
+            with st.spinner("Generating point list..."):
+                from soo_extractor import generate_pointlist_prompt, parse_pointlist_response
+                prompt = generate_pointlist_prompt(p.get("name", "Project"), soo_text)
+                raw = _claude(k, prompt, max_tokens=4000)
+                if raw:
+                    try:
+                        rows = parse_pointlist_response(raw)
+                        p["soo_data"]["point_list"] = rows
+                        _save_app_state()
+                        st.success(f"✅ {len(rows)} points extracted")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Parse error: {e}")
+    
+    # ── Button 4: Appendix ─────────────────────────────────────────────────────
+    with col4:
+        if st.button("📎 Appendix", key="btn_appendix", use_container_width=True):
+            if not p["soo_data"]["point_list"]:
+                st.warning("⚠️ Generate Point List first")
+            else:
+                with st.spinner("Generating appendix..."):
+                    from soo_extractor import generate_appendix_prompt, parse_pointlist_response
+                    main_equip = list(set(row.get("Equipment", "") for row in p["soo_data"]["point_list"]))
+                    prompt = generate_appendix_prompt(p.get("name", "Project"), soo_text, main_equip)
+                    raw = _claude(k, prompt, max_tokens=2000)
+                    if raw:
+                        try:
+                            rows = parse_pointlist_response(raw)
+                            p["soo_data"]["appendix"] = rows
+                            _save_app_state()
+                            st.success(f"✅ {len(rows)} appendix points extracted")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Parse error: {e}")
+    
+    # ── Button 5: Important Notes ──────────────────────────────────────────────
+    with col5:
+        if st.button("⭐ Notes", key="btn_notes", use_container_width=True):
+            with st.spinner("Extracting notes..."):
+                from soo_extractor import generate_important_notes_prompt, parse_notes_response
+                prompt = generate_important_notes_prompt(p.get("name", "Project"), soo_text)
+                raw = _claude(k, prompt, max_tokens=2500)
+                if raw:
+                    try:
+                        data = parse_notes_response(raw)
+                        p["soo_data"]["important_notes"] = data
+                        _save_app_state()
+                        st.success("✅ Important notes extracted")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Parse error: {e}")
+    
+    # ── Display Results ────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Results:")
+    
+    # Overview
+    if p["soo_data"]["overview"]:
+        with st.expander("📋 Overview (Bird's eye view)"):
+            overview_data = p["soo_data"]["overview"]
+            if isinstance(overview_data, dict) and "overview" in overview_data:
+                for system in overview_data["overview"]:
+                    st.write(f"**{system.get('System', 'Unknown')}** — {system.get('Equipment_Type', '')}")
+                    st.write(f"Control: {system.get('Control_Approach', '')}")
+                    st.write(f"Points: {system.get('Control_Points', '')}")
+                    st.write(f"Integration: {system.get('Integration', '')}")
+                    st.write("---")
+            else:
+                st.json(overview_data)
+    
+    # Point List
+    if p["soo_data"]["point_list"]:
+        with st.expander(f"📊 Point List ({len(p['soo_data']['point_list'])} points)"):
+            df = pd.DataFrame(p["soo_data"]["point_list"])
+            cols = ["Panel Name", "Equipment", "Point name", "Control Device", 
+                   "AI", "BI", "AO", "BO", "Serial Pt", "Terms", "Remarks"]
+            for col in cols:
+                if col not in df.columns:
+                    df[col] = ""
+            df = df[cols]
+            
+            st.dataframe(df, use_container_width=True, height=400)
+            
+            # Export to Excel
+            xb = BytesIO()
+            df.to_excel(xb, index=False, sheet_name="Point List")
+            xb.seek(0)
+            st.download_button("📥 Download Point List Excel", xb, 
+                              f"point_list_{p.get('name', 'project').replace(' ', '_')}.xlsx",
+                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    # Appendix
+    if p["soo_data"]["appendix"]:
+        with st.expander(f"📎 Appendix ({len(p['soo_data']['appendix'])} special points)"):
+            df = pd.DataFrame(p["soo_data"]["appendix"])
+            cols = ["Panel Name", "Equipment", "Point name", "Control Device", 
+                   "AI", "BI", "AO", "BO", "Serial Pt", "Terms", "Remarks"]
+            for col in cols:
+                if col not in df.columns:
+                    df[col] = ""
+            df = df[cols]
+            
+            st.dataframe(df, use_container_width=True, height=300)
+            
+            # Export to Excel
+            xb = BytesIO()
+            df.to_excel(xb, index=False, sheet_name="Appendix")
+            xb.seek(0)
+            st.download_button("📥 Download Appendix Excel", xb,
+                              f"appendix_{p.get('name', 'project').replace(' ', '_')}.xlsx",
+                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    # Combined export (Main + Appendix)
+    if p["soo_data"]["point_list"] and p["soo_data"]["appendix"]:
+        st.markdown("**Or export both together:**")
+        
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        
+        wb = Workbook()
+        
+        # Main sheet
+        ws_main = wb.active
+        ws_main.title = "Main Points"
+        
+        df_main = pd.DataFrame(p["soo_data"]["point_list"])
+        cols = ["Panel Name", "Equipment", "Point name", "Control Device", 
+               "AI", "BI", "AO", "BO", "Serial Pt", "Terms", "Remarks"]
+        for col in cols:
+            if col not in df_main.columns:
+                df_main[col] = ""
+        df_main = df_main[cols]
+        
+        fill = PatternFill("solid", start_color="2E75B6")
+        for ci, col in enumerate(cols, 1):
+            cell = ws_main.cell(1, ci, col)
+            cell.font = Font(bold=True, color="FFFFFF", size=10)
+            cell.fill = fill
+        
+        for ri, row in enumerate(df_main.to_dict("records"), 2):
+            for ci, col in enumerate(cols, 1):
+                ws_main.cell(ri, ci, row.get(col, ""))
+        
+        # Appendix sheet
+        ws_app = wb.create_sheet("Appendix")
+        
+        df_app = pd.DataFrame(p["soo_data"]["appendix"])
+        for col in cols:
+            if col not in df_app.columns:
+                df_app[col] = ""
+        df_app = df_app[cols]
+        
+        fill_app = PatternFill("solid", start_color="B85C00")
+        for ci, col in enumerate(cols, 1):
+            cell = ws_app.cell(1, ci, col)
+            cell.font = Font(bold=True, color="FFFFFF", size=10)
+            cell.fill = fill_app
+        
+        for ri, row in enumerate(df_app.to_dict("records"), 2):
+            for ci, col in enumerate(cols, 1):
+                ws_app.cell(ri, ci, row.get(col, ""))
+        
+        xb_combined = BytesIO()
+        wb.save(xb_combined)
+        xb_combined.seek(0)
+        
+        st.download_button("📥 Download Main + Appendix Combined", xb_combined,
+                          f"point_list_complete_{p.get('name', 'project').replace(' ', '_')}.xlsx",
+                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    # Important Notes
+    if p["soo_data"]["important_notes"]:
+        with st.expander("⭐ Important Notes (Estimation)"):
+            notes = p["soo_data"]["important_notes"]
+            if isinstance(notes, dict):
+                for category, items in notes.items():
+                    if items:
+                        st.subheader(category.replace("_", " ").title())
+                        for item in items:
+                            st.write(f"• {item}")
+            else:
+                st.json(notes)
     r_tab1, r_tab2, r_tab3, r_tab4 = st.tabs([
         "✅ Confirmed scope",
         "❌ Exclusions",
@@ -1880,26 +2088,33 @@ def _tab_master(p):
 
 # ── Analysis functions ─────────────────────────────────────────────────────────
 
+
 def _analyse_soo(soo_bytes, soo_name, api_key_val):
     """Read SOO and extract BMS scope register."""
     fname = soo_name.lower()
     if fname.endswith(".docx"):
-        text = _extract_docx_text(soo_bytes, 12000)
+        text = _extract_docx_text(soo_bytes, 15000)
     else:
-        text = _extract_pdf_text(soo_bytes, 12000)
+        text = _extract_pdf_text(soo_bytes, 15000)
+
+    if not text or len(text.strip()) < 50:
+        return {"systems":[],"exclusions":[],"questions":
+                ["Could not extract text from SOO PDF"],"io_summary":[],
+                "error":"No text extracted"}
 
     prompt = f"""You are a senior BMS controls engineer reading a Sequence of Operations document.
 
-SOO TEXT:
-{text[:10000]}
+SOO TEXT (extract all BMS systems from this):
+{text[:12000]}
 
-Extract the following and return ONLY valid JSON:
+Extract ALL systems that have BMS control sequences and return ONLY valid JSON:
 {{
   "systems": [
     {{
       "tag": "HWP-74-1,2,3",
       "system": "Hot Water Pump",
       "floor": "74th Floor",
+      "qty": 3,
       "control_type": "DDC + VFD BACnet",
       "scope": "Start/stop, status, speed, fault, DP control",
       "interface": "Hardwired + BACnet MS/TP"
@@ -1908,7 +2123,7 @@ Extract the following and return ONLY valid JSON:
   "exclusions": [
     {{
       "item": "Expansion Tanks",
-      "reason": "No BMS monitoring — mechanical only"
+      "reason": "No BMS monitoring - mechanical only"
     }}
   ],
   "questions": [
@@ -1924,27 +2139,39 @@ Extract the following and return ONLY valid JSON:
 }}
 
 Rules:
-- Only include systems with explicit BMS sequences in the SOO
-- Control type options: DDC, BACnet MS/TP, BACnet IP, Hardwired, Manufacturer standalone, Monitoring only
-- Exclusions = items mentioned but NOT in BMS scope
-- Questions = unclear scope, missing sequences, or ambiguous control requirements
-- Return ONLY the JSON, no other text"""
+- Include EVERY system that has a written BMS sequence
+- Control type: DDC / BACnet MS/TP / BACnet IP / Hardwired / Manufacturer standalone / Monitoring only
+- Exclusions = items mentioned but explicitly NOT in BMS scope
+- Questions = unclear scope or missing sequences
+- Start response with {{ and end with }}
+- Return ONLY the JSON, no markdown, no explanation"""
 
-    raw = _claude(api_key_val, prompt, 4000) or ""
+    raw = _claude(api_key_val, prompt, max_tokens=4000) or ""
+
+    if not raw:
+        return {"systems":[],"exclusions":[],"questions":
+                ["Claude returned empty response - check API key"],"io_summary":[],
+                "error":"Empty Claude response"}
+
     try:
         clean = raw.strip()
         if "```" in clean:
-            parts = clean.split("```")
-            clean = parts[1] if len(parts) > 1 else clean
-            if clean.startswith("json"): clean = clean[4:]
-        s = clean.find("{"); e = clean.rfind("}")
+            for part in clean.split("```"):
+                part = part.strip().lstrip("json").strip()
+                if part.startswith("{"):
+                    clean = part
+                    break
+        s = clean.find("{")
+        e = clean.rfind("}")
         if s != -1 and e > s:
             return json.loads(clean[s:e+1])
-    except Exception:
-        pass
-    return {"systems":[],"exclusions":[],"questions":[f"Parse error: {raw[:200]}"],"io_summary":[]}
-
-
+        return {"systems":[],"exclusions":[],"questions":
+                [f"JSON parse failed. Raw: {raw[:300]}"],"io_summary":[],
+                "error":"Parse failed"}
+    except Exception as ex:
+        return {"systems":[],"exclusions":[],"questions":
+                [f"Parse error: {ex}. Raw: {raw[:200]}"],"io_summary":[],
+                "error":str(ex)}
 def _analyse_schedule(sched_bytes, soo_register):
     """Extract BMS-relevant devices from mechanical schedule PDF."""
     import fitz, re
@@ -2431,43 +2658,61 @@ def module_point_list(p):
     pl_tmpl = cl.get("pl_template_bytes")
     pl_name = cl.get("pl_template_name","")
 
+    st.markdown("""
+    **Columns:** Panel Name · Equipment · Point Name · Control Device · AI · BI · AO · BO · Serial Pt · Terms · Remarks
+    
+    AI extracts all fields from SOO; you refine in the editor below.
+    """)
+
     if pl_tmpl:
-        st.success(f"✅ Client template loaded: `{pl_name}` — AI will match your column format exactly.")
+        st.success(f"✅ Client template loaded: `{pl_name}` — data will export to your format.")
     else:
-        st.info("No client template. AI uses standard columns. Add a template in the Clients tab.")
+        st.info("No client template. Standard columns used. Add a template in the Clients tab.")
 
     has_takeoff = len(p["takeoff"].get("equipment", [])) > 0
     has_soo     = bool(p["docs"].get("SOO"))
     has_spec    = bool(p["docs"].get("Controls spec"))
 
+    if not has_soo:
+        st.warning("⚠️ No SOO uploaded. Click 'Generate' to extract from any Controls spec, or upload SOO in Takeoff tab.")
+    else:
+        st.success("✅ SOO loaded — ready to generate points.")
+
     if not has_takeoff:
-        st.info("ℹ️ No takeoff loaded — point list will be generated from SOO/spec. "
-                "Exact device tags will not be available until takeoff is done.")
-    if not has_soo and not has_spec:
-        st.warning("⚠️ Upload SOO or Controls spec in the Takeoff tab for best results.")
+        st.info("ℹ️ No takeoff loaded. Panel Names will be inferred from Equipment tags. Exact wiring details not available.")
 
     # ── Diagnostics ───────────────────────────────────────────────────────
-    with st.expander("🔍 Diagnostics — click to check if SOO is loaded"):
+    with st.expander("🔍 Diagnostics & SOO Preview"):
         soo_bytes  = p["docs"].get("SOO")
         spec_bytes = p["docs"].get("Controls spec")
         k_check    = api_key()
-        st.write({
-            "SOO uploaded":          bool(soo_bytes),
-            "SOO size (KB)":         round(len(soo_bytes)/1024, 1) if soo_bytes else 0,
+        
+        diag = {
+            "SOO uploaded":           bool(soo_bytes),
+            "SOO size (KB)":          round(len(soo_bytes)/1024, 1) if soo_bytes else 0,
             "Controls spec uploaded": bool(spec_bytes),
-            "API key set":           bool(k_check),
-            "API key prefix":        k_check[:12] + "..." if k_check else "none",
-            "Takeoff devices":       len(p["takeoff"].get("equipment",[])),
-            "Client":                p.get("client","none"),
-        })
+            "API key valid":          bool(k_check) and len(k_check) > 10,
+            "API key prefix":         k_check[:12] + "..." if k_check else "not set",
+            "Takeoff devices":        len(p["takeoff"].get("equipment",[])),
+            "Client":                 p.get("client","none"),
+            "Points generated":       len(p["point_list"].get("rows",[])),
+        }
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            for k, v in list(diag.items())[:4]:
+                st.metric(k, v if not isinstance(v, bool) else ("✅" if v else "❌"))
+        with col2:
+            for k, v in list(diag.items())[4:]:
+                st.metric(k, v if not isinstance(v, bool) else ("✅" if v else "❌"))
+        
         if soo_bytes:
-            # Try extracting first 200 chars
+            st.markdown("**SOO text preview (first 400 chars):**")
             try:
                 import fitz
                 doc = fitz.open(stream=soo_bytes, filetype="pdf")
-                preview = doc[0].get_text()[:300].strip()
-                st.markdown(f"**SOO text preview (page 1):**")
-                st.code(preview)
+                preview = doc[0].get_text()[:400].strip()
+                st.code(preview, language="text")
             except Exception as e:
                 st.error(f"Could not read SOO: {e}")
 
@@ -2491,22 +2736,40 @@ def module_point_list(p):
                     prog.progress(40, text=f"SOO text found ({len(_preview)} chars preview)...")
                 prog.progress(60, text="Sending to Claude...")
                 rows = ai_point_list(p, k, pl_tmpl, pl_name)
+                prog.progress(85, text="Inferring I/O types...")
+                # Apply I/O type inference
+                for row in rows:
+                    if row.get("Point Name"):
+                        io_types = infer_io_type(row["Point Name"], row.get("Remarks", ""))
+                        for io_key in ["AI", "BI", "AO", "BO", "Serial_Pt"]:
+                            if not row.get(io_key):
+                                row[io_key] = io_types[io_key]
                 prog.progress(100, text="Done.")
                 p["point_list"]["rows"]   = rows
                 p["point_list"]["status"] = "done"
                 _save_app_state()
-                st.success(f"✅ {len(rows)} points generated.")
+                st.success(f"✅ {len(rows)} points generated. Edit any cell to refine.")
                 st.rerun()
             except Exception as e:
                 prog.progress(100, text="Error.")
-                st.error(f"Error: {e}")
+                st.error(f"❌ Error: {e}\n\nTip: Check that Streamlit Secrets has ANTHROPIC_API_KEY and it's valid.")
 
     rows = p["point_list"].get("rows",[])
     if not rows:
-        st.info("No point list yet. Click Generate."); return
+        st.info("👆 Click 'Generate point list' to extract from SOO."); return
 
-    st.markdown(f"**{len(rows)} points** — edit any cell directly:")
-    edited = st.data_editor(pd.DataFrame(rows), use_container_width=True,
+    st.markdown(f"**{len(rows)} points** — click a cell to edit:")
+    
+    # Prepare DataFrame with proper column order
+    columns = ["Panel Name", "Equipment", "Point Name", "Control Device", 
+               "AI", "BI", "AO", "BO", "Serial_Pt", "Terms", "Remarks"]
+    df = pd.DataFrame(rows)
+    for col in columns:
+        if col not in df.columns:
+            df[col] = ""
+    df = df[columns]
+    
+    edited = st.data_editor(df, use_container_width=True,
                             hide_index=True, num_rows="dynamic", key="pl_ed")
     p["point_list"]["rows"] = edited.to_dict("records")
 
@@ -2516,6 +2779,127 @@ def module_point_list(p):
                            f"point_list_{p['name'].replace(' ','_')}.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            key="dl_pl")
+
+    # ── Appendix Section ──────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### Appendix: System-Wise Special Points")
+    st.markdown("""
+    **For supplementary points not in main list:**
+    - Post-fire smoke purge sequences (PFSP, GX, SPF, HPF)
+    - Life safety / emergency pressurization
+    - Future expansion or placeholder points
+    - Special integrations (Fire alarm, Backup power monitoring)
+    - Archived/historical sequences
+    """)
+    
+    # Initialize appendix in session if not present
+    if "point_list_appendix" not in p:
+        p["point_list_appendix"] = {"rows": [], "status": "not_started"}
+    
+    if st.button("🤖 Generate Appendix Points", key="gen_pl_app"):
+        k = api_key()
+        if not k:
+            st.error("❌ No API key.")
+        elif not p["docs"].get("SOO"):
+            st.warning("⚠️ Upload SOO to generate appendix points.")
+        else:
+            prog = st.progress(0, text="Extracting appendix points from SOO...")
+            try:
+                prog.progress(40, text="Analyzing main points...")
+                main_equip = list(set(row.get("Equipment", "") for row in rows if row.get("Equipment")))
+                
+                prog.progress(60, text="Sending to Claude...")
+                soo_b = p["docs"].get("SOO")
+                if soo_b:
+                    import fitz as _fitz
+                    _doc = _fitz.open(stream=soo_b, filetype="pdf")
+                    soo_text = " ".join(page.get_text() for page in _doc)[:10000]
+                    
+                    from point_list_extractor import generate_appendix_prompt
+                    app_prompt = generate_appendix_prompt(p["name"], soo_text, main_equip)
+                    app_raw = _claude(k, app_prompt, max_tokens=2000) or ""
+                    
+                    from point_list_extractor import parse_point_list_response
+                    app_rows = parse_point_list_response(app_raw) if app_raw.strip() else []
+                    
+                    # Apply I/O inference to appendix
+                    for row in app_rows:
+                        if row.get("Point Name"):
+                            io_types = infer_io_type(row["Point Name"], row.get("Remarks", ""))
+                            for io_key in ["AI", "BI", "AO", "BO", "Serial_Pt"]:
+                                if not row.get(io_key):
+                                    row[io_key] = io_types[io_key]
+                    
+                    p["point_list_appendix"]["rows"] = app_rows
+                    p["point_list_appendix"]["status"] = "done"
+                    prog.progress(100, text="Done.")
+                    st.success(f"✅ {len(app_rows)} appendix points generated.")
+                    _save_app_state()
+                    st.rerun()
+            except Exception as e:
+                prog.progress(100)
+                st.error(f"Error: {e}")
+    
+    # Display appendix points
+    app_rows = p.get("point_list_appendix", {}).get("rows", [])
+    if app_rows:
+        st.markdown(f"**{len(app_rows)} appendix points** — edit as needed:")
+        columns = ["Panel Name", "Equipment", "Point Name", "Control Device", 
+                   "AI", "BI", "AO", "BO", "Serial_Pt", "Terms", "Remarks"]
+        df_app = pd.DataFrame(app_rows)
+        for col in columns:
+            if col not in df_app.columns:
+                df_app[col] = ""
+        df_app = df_app[columns]
+        
+        edited_app = st.data_editor(df_app, use_container_width=True,
+                                    hide_index=True, num_rows="dynamic", key="pl_app_ed")
+        p["point_list_appendix"]["rows"] = edited_app.to_dict("records")
+        
+        if st.button("⬇ Export Main + Appendix", key="exp_pl_combined"):
+            # Export both main and appendix in one Excel file
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+            
+            wb = Workbook()
+            
+            # Main sheet
+            ws_main = wb.active
+            ws_main.title = "Main Points"
+            cols = ["Panel Name", "Equipment", "Point Name", "Control Device", 
+                   "AI", "BI", "AO", "BO", "Serial_Pt", "Terms", "Remarks"]
+            fill = PatternFill("solid", start_color="2E75B6")
+            for ci, col in enumerate(cols, 1):
+                cell = ws_main.cell(1, ci, col)
+                cell.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+                cell.fill = fill
+                ws_main.column_dimensions[cell.column_letter].width = max(14, len(str(col)) + 4)
+            
+            for ri, row in enumerate(rows, 2):
+                for ci, col in enumerate(cols, 1):
+                    ws_main.cell(ri, ci, row.get(col, ""))
+            
+            # Appendix sheet
+            if app_rows:
+                ws_app = wb.create_sheet("Appendix")
+                for ci, col in enumerate(cols, 1):
+                    cell = ws_app.cell(1, ci, col)
+                    cell.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+                    cell.fill = PatternFill("solid", start_color="B85C00")
+                    ws_app.column_dimensions[cell.column_letter].width = max(14, len(str(col)) + 4)
+                
+                for ri, row in enumerate(app_rows, 2):
+                    for ci, col in enumerate(cols, 1):
+                        ws_app.cell(ri, ci, row.get(col, ""))
+            
+            out = io.BytesIO()
+            wb.save(out)
+            st.download_button("Download Main + Appendix .xlsx", out.getvalue(),
+                               f"point_list_complete_{p['name'].replace(' ','_')}.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key="dl_pl_combined")
+    else:
+        st.info("No appendix points yet. Click 'Generate Appendix Points' to extract special sequences.")
 
 # ── Module 3: Estimate ────────────────────────────────────────────────────────
 def module_estimate(p):
@@ -3007,10 +3391,15 @@ Return ONLY the JSON, no other text."""
         }
 
 def ai_point_list(p, k, pl_tmpl, pl_name):
-    """Generate BMS point list from SOO. Works with or without takeoff."""
+    """Generate BMS point list from SOO with BMS-specific columns.
+    
+    Columns: Panel Name, Equipment, Point Name, Control Device, AI, BI, AO, BO, Serial_Pt, Terms, Remarks
+    AI infers I/O types; user refines in editor.
+    """
 
-    # ── Column format ─────────────────────────────────────────────────────
-    columns = ["System/Device","Tag","Description","Qty","AI","AO","DI","DO","HWI","Network","Notes"]
+    # ── Column format (BMS-specific) ───────────────────────────────────────
+    columns = ["Panel Name", "Equipment", "Point Name", "Control Device", 
+               "AI", "BI", "AO", "BO", "Serial_Pt", "Terms", "Remarks"]
     if pl_tmpl:
         try:
             df_t = pd.read_excel(io.BytesIO(pl_tmpl), nrows=3)
@@ -3018,89 +3407,43 @@ def ai_point_list(p, k, pl_tmpl, pl_name):
             if cols: columns = cols
         except Exception:
             pass
-    col_str = ", ".join(f'"{c}"' for c in columns)
 
     # ── Extract SOO text ──────────────────────────────────────────────────
-    soo_text, spec_text = "", ""
+    soo_text = ""
     if p["docs"].get("SOO"):
         fname = p["doc_names"].get("SOO","")
-        soo_text = (_extract_docx_text(p["docs"]["SOO"], 10000)
+        soo_text = (_extract_docx_text(p["docs"]["SOO"], 12000)
                     if fname.lower().endswith(".docx")
-                    else _extract_pdf_text(p["docs"]["SOO"], 10000))
-    if p["docs"].get("Controls spec"):
-        spec_text = _extract_pdf_text(p["docs"]["Controls spec"], 4000)
+                    else _extract_pdf_text(p["docs"]["SOO"], 12000))
+    
+    if not soo_text:
+        return [{c: "No SOO found. Upload in Takeoff tab." if c == "Panel Name" 
+                     else "Error" if c == "Equipment"
+                     else "" for c in columns}]
 
-    # ── Device summary ────────────────────────────────────────────────────
+    # ── Get takeoff equipment for context ──────────────────────────────────
     equip = p["takeoff"].get("equipment", [])
-    if equip:
-        from collections import Counter as _C
-        sc = _C(e.get("system","Unknown") for e in equip)
-        dev_note = "Devices in takeoff: " + "; ".join(f"{v}x {k}" for k,v in sc.most_common(20))
-    else:
-        dev_note = "No takeoff yet — identify all systems from the SOO and generate points for each."
 
-    # ── Example row using actual columns ─────────────────────────────────
-    ex = {}
-    for c in columns:
-        if c in ("System/Device",): ex[c] = "DOAS-1M-1"
-        elif c in ("Tag",):         ex[c] = "Supply Fan Start/Stop"
-        elif c in ("Description",): ex[c] = "Supply fan enable command"
-        elif c in ("Qty",):         ex[c] = 1
-        elif c in ("DO","AO"):      ex[c] = "1"
-        else:                       ex[c] = ""
+    # ── Generate prompt using new module ──────────────────────────────────
+    prompt = generate_point_list_prompt(p["name"], soo_text, takeoff_equip=equip)
 
-    prompt = f"""You are a senior BMS controls engineer. Generate a point list for project '{p["name"]}'.
-
-{dev_note}
-
-SEQUENCE OF OPERATIONS — read every section and extract ALL I/O points listed:
-{soo_text[:8000] if soo_text else "Not provided."}
-
-CONTROLS SPEC:
-{spec_text[:2000] if spec_text else "Not provided."}
-
-OUTPUT RULES:
-- Return a JSON array of objects, one row per BMS point
-- Use EXACTLY these column names: {col_str}
-- Use "1" for present, "" for not applicable
-- Cover every system that has an I/O table in the SOO above (ASHP, HWP, CHWP, DOAS, MAU, AHU, ERV, FCU, VAV, ACU, HWC, FTR, GX, EF, ESP, GFU)
-- Each system needs 5-20 rows for its individual points (fan SS, fan status, fan fault, valve, sensors, alarms)
-- Do NOT summarise — one row per point
-
-CRITICAL: Start your response with [ and end with ]. No markdown, no explanation, no code fences.
-
-Example: {json.dumps([ex])}"""
-
+    # ── Call Claude ───────────────────────────────────────────────────────
     raw = _claude(k, prompt, max_tokens=4000) or ""
 
-    # ── Robust JSON extraction ────────────────────────────────────────────
-    def parse(text):
-        text = text.strip()
-        # Strip markdown fences
-        if "```" in text:
-            for part in text.split("```"):
-                part = part.strip().lstrip("json").strip()
-                if part.startswith("["): text = part; break
-        # Trim to array bounds
-        s, e = text.find("["), text.rfind("]")
-        if s != -1 and e > s:
-            return json.loads(text[s:e+1])
-        raise ValueError("No array found")
+    # ── Parse response and apply I/O inference ──────────────────────────
 
     try:
-        rows = parse(raw)
-        if not isinstance(rows, list) or not rows:
-            raise ValueError("Empty")
+        rows = parse_point_list_response(raw)
         # Ensure all columns present
         for row in rows:
             for col in columns:
                 row.setdefault(col, "")
         return rows
     except Exception as exc:
-        return [{c: ("Parse failed — check API key is valid in Streamlit Secrets"
-                     if c == "System/Device"
-                     else f"Error: {exc}" if c == "Tag"
-                     else raw[:100] if c == "Description"
+        return [{c: (f"Parse error: {str(exc)[:80]}"
+                     if c == "Panel Name"
+                     else "Check Streamlit Secrets → ANTHROPIC_API_KEY" if c == "Equipment"
+                     else raw[:100] if c == "Point Name"
                      else "") for c in columns}]
 
 def ai_estimate(p, k, rates, markup):
