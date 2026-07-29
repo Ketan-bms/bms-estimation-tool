@@ -1355,7 +1355,7 @@ def _tab_soo(p):
     st.success(f"✅ Loaded: {uploaded_file.name} ({len(soo_text)} chars)")
     
     # Initialize SOO state
-    if "soo_data" not in p:
+    if "soo_data" not in p or not isinstance(p.get("soo_data"), dict):
         p["soo_data"] = {
             "overview": None,
             "proposal": None,
@@ -1463,16 +1463,24 @@ def _tab_soo(p):
     # Overview
     if p["soo_data"]["overview"]:
         with st.expander("📋 Overview (Bird's eye view)"):
-            overview_data = p["soo_data"]["overview"]
-            if isinstance(overview_data, dict) and "overview" in overview_data:
-                for system in overview_data["overview"]:
-                    st.write(f"**{system.get('System', 'Unknown')}** — {system.get('Equipment_Type', '')}")
-                    st.write(f"Control: {system.get('Control_Approach', '')}")
-                    st.write(f"Points: {system.get('Control_Points', '')}")
-                    st.write(f"Integration: {system.get('Integration', '')}")
-                    st.write("---")
-            else:
-                st.json(overview_data)
+            try:
+                overview_data = p["soo_data"]["overview"]
+                if isinstance(overview_data, dict):
+                    if "overview" in overview_data and isinstance(overview_data["overview"], list):
+                        for system in overview_data["overview"]:
+                            if isinstance(system, dict):
+                                st.write(f"**{system.get('System', 'Unknown')}** — {system.get('Equipment_Type', '')}")
+                                st.write(f"Control: {system.get('Control_Approach', '')}")
+                                st.write(f"Points: {system.get('Control_Points', '')}")
+                                st.write(f"Integration: {system.get('Integration', '')}")
+                                st.write("---")
+                    else:
+                        st.json(overview_data)
+                else:
+                    st.json(overview_data)
+            except Exception as e:
+                st.error(f"Error displaying overview: {e}")
+                st.json(p["soo_data"]["overview"])
     
     # Point List
     if p["soo_data"]["point_list"]:
