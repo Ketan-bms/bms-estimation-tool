@@ -1,6 +1,10 @@
 """
 soo_extractor.py
-COMPLETE SOO extraction module - FULL VERSION with real prompts
+Extract from SOO (Sequence of Operations):
+1. Overview (system breakdown, control approach, no quantities)
+2. Proposal (user provides template, follow format)
+3. Point List (main + appendix in user's Excel format)
+4. Important Notes (for estimation)
 """
 
 import json
@@ -8,193 +12,237 @@ import re
 
 
 def generate_overview_prompt(project_name, soo_text):
-    """Generate prompt for SOO Overview - bird's eye view."""
-    prompt = f"""You are a senior BMS engineer. Extract a HIGH-LEVEL overview of the SOO.
+    """Generate prompt for SOO Overview - bird's eye view of sequence."""
+    
+    prompt = f"""You are a senior BMS controls engineer. Extract a bird's eye overview of the SOO.
 
 PROJECT: {project_name}
 
 SEQUENCE OF OPERATIONS:
-{soo_text[:8000]}
+{soo_text}
 
-Return ONLY JSON:
+OUTPUT: Return JSON with this structure:
+
 {{
   "overview": [
     {{
       "System": "ASHP-1",
-      "Equipment_Type": "Air Source Heat Pump", 
-      "Control_Approach": "DDC with Honeywell PLC",
-      "Control_Points": "Compressor on/off, supply fan speed modulation, water temp sensor",
-      "Integration": "Hardwired 8 I/O points, BACnet network",
-      "Key_Features": "Modular staging, freeze protection, lead-lag operation"
-    }}
+      "Equipment_Type": "Air Source Heat Pump",
+      "Control_Approach": "DDC Controller (Honeywell PLC) with compressor staging and freeze protection",
+      "Control_Points": "Compressor start/stop, fan speed modulation (VFD), valve modulation, temperature sensors, alarms",
+      "Integration": "Hardwired DDC points (8), BACnet network (2)",
+      "Key_Features": "Modular staging, lead-lag operation, low temperature shutdown"
+    }},
+    ...
   ]
 }}
 
 RULES:
-- System: Equipment tag (ASHP-1, DOAS-1, FCU-1)
-- Equipment_Type: What it is
-- Control_Approach: DDC vs Manufacturer controller (HIGH LEVEL)
-- Control_Points: What this system controls (no quantities)
-- Integration: How it connects (hardwired, BACnet, etc)
-- Key_Features: Special sequences, safety, interlocks
+- System: Equipment tag (e.g., ASHP-1, DOAS-1M-1, FCU-SC-5)
+- Equipment_Type: What it is (Heat Pump, DOAS, AHU, FCU, VAV, etc.)
+- Control_Approach: HIGH-LEVEL approach (e.g., "DDC Controller" vs "Manufacturer provided controller" vs "Local thermostat")
+- Control_Points: What this system controls (fan start/stop, valve modulation, sensors, alarms, etc.) - NOT quantities
+- Integration: How it connects (hardwired DDC, BACnet, Modbus, local control, etc.)
+- Key_Features: Special sequences, interlocks, safety features
 
-NO markdown. START with {{ END with }}"""
+DO NOT include quantities of equipment. Focus on control strategy and approach.
+
+CRITICAL: Start with {{ and end with }}. No markdown."""
+    
     return prompt
 
 
-def generate_pointlist_prompt(project_name, soo_text):
-    """Generate prompt for Point List extraction."""
-    prompt = f"""You are a BMS engineer. Extract ALL BMS points from this SOO.
+def generate_pointlist_prompt(project_name, soo_text, takeoff_equip=None):
+    """Generate prompt for Point List extraction in user's format."""
+    
+    example_row = {
+        "Panel Name": "MER-DDC-1",
+        "Equipment": "ASHP-1",
+        "Point name": "Compressor Enable",
+        "Control Device": "Honeywell PLC",
+        "AI": "",
+        "BI": "",
+        "AO": "",
+        "BO": "x",
+        "Serial Pt": "",
+        "Terms": "OUT-1",
+        "Remarks": "Enable signal to compressor contactor"
+    }
+    
+    prompt = f"""You are a senior BMS controls engineer. Extract MAIN point list from SOO.
 
 PROJECT: {project_name}
 
 SEQUENCE OF OPERATIONS:
-{soo_text[:8000]}
+{soo_text}
 
-Return ONLY JSON array:
-[
-  {{
-    "Panel Name": "MER-DDC-1",
-    "Equipment": "ASHP-1",
-    "Point name": "Compressor Enable",
-    "Control Device": "Honeywell PLC",
-    "AI": "",
-    "BI": "",
-    "AO": "",
-    "BO": "x",
-    "Serial Pt": "",
-    "Terms": "OUT-1",
-    "Remarks": "Enable signal to compressor"
-  }}
-]
+OUTPUT: Return JSON array of BMS points with EXACTLY these columns:
+Panel Name, Equipment, Point name, Control Device, AI, BI, AO, BO, Serial Pt, Terms, Remarks
+
+Use "x" to mark present I/O types (AI, BI, AO, BO, Serial Pt). Leave blank if not applicable.
 
 RULES:
 - ONE ROW PER POINT (not per device)
 - Extract EVERY point mentioned in SOO
-- System-wise order (ASHP-1 all points, then ASHP-2, then DOAS, etc)
-- Panel Name: Infer from system tag
-- Equipment: System/device tag
-- Point name: Exact name from SOO
-- Control Device: Honeywell, Siemens, Manufacturer, etc
-- I/O columns: Mark with "x" if present
-  - AI = Analog Input (sensors: temp, humidity, pressure, flow)
-  - BI = Binary Input (status, alarms, fault signals)
-  - AO = Analog Output (modulation, speed, position)
-  - BO = Binary Output (start/stop, enable/disable commands)
-  - Serial Pt = BACnet/Modbus network points
-- Terms: Terminal/connection info
-- Remarks: Notes from SOO
+- System-wise organization (all ASHP-1 points together, then ASHP-2, etc.)
+- Panel Name: Infer from system prefix (e.g., MER-DDC-1 for MER equipment)
+- Equipment: Equipment tag from SOO (ASHP-1, DOAS-1M-1, FCU-SC-5, etc.)
+- Point name: Exact point from SOO (Supply Fan Start/Stop, Leaving Water Temperature, etc.)
+- Control Device: Honeywell PLC, BACnet Gateway, Manufacturer controller, etc.
+- AI/BI/AO/BO/Serial Pt: Mark with "x" if present
+  - AI: Analog Input (temperature, humidity, pressure, flow sensors)
+  - BI: Binary Input (status, alarms, fault signals)
+  - AO: Analog Output (modulation, position control, setpoint)
+  - BO: Binary Output (start/stop, enable/disable commands)
+  - Serial Pt: BACnet/Modbus/network points
+- Terms: Terminal designation (e.g., OUT-1, IN-2, AI-1)
+- Remarks: Operational notes from SOO
 
-NO markdown. START with [ END with ]"""
+CRITICAL: Start with [ and end with ]. No markdown.
+
+Example row:
+{json.dumps([example_row])}
+
+Extract ALL main points:"""
+    
     return prompt
 
 
 def generate_appendix_prompt(project_name, soo_text, main_equipment):
-    """Generate prompt for Appendix points."""
-    main_str = ", ".join(main_equipment) if main_equipment else ""
-    prompt = f"""You are a BMS engineer. Extract SPECIAL/APPENDIX points from SOO.
+    """Generate prompt for Point List Appendix - special sequences."""
+    
+    example_row = {
+        "Panel Name": "MER-DDC-1",
+        "Equipment": "PFSP-1M-1",
+        "Point name": "Post-Fire Smoke Purge Enable",
+        "Control Device": "Fire Alarm Interface",
+        "AI": "",
+        "BI": "",
+        "AO": "",
+        "BO": "x",
+        "Serial Pt": "",
+        "Terms": "OUT-5",
+        "Remarks": "Activated by fire alarm system; special sequence"
+    }
+    
+    main_equip_str = ", ".join(main_equipment) if main_equipment else "None"
+    
+    prompt = f"""You are a senior BMS controls engineer. Extract APPENDIX points from SOO.
 
 PROJECT: {project_name}
 
-Main equipment already in list: {main_str}
+Equipment already in main point list: {main_equip_str}
 
 SEQUENCE OF OPERATIONS:
-{soo_text[:8000]}
+{soo_text}
 
-Return ONLY JSON array:
-[
-  {{
-    "Panel Name": "MER-DDC-1",
-    "Equipment": "PFSP-1M-1",
-    "Point name": "Post-Fire Smoke Purge Enable",
-    "Control Device": "Fire Alarm Interface",
-    "AI": "",
-    "BI": "",
-    "AO": "",
-    "BO": "x",
-    "Serial Pt": "",
-    "Terms": "OUT-5",
-    "Remarks": "Activated by fire alarm system"
-  }}
-]
+OUTPUT: Return JSON array of special/appendix points with EXACTLY these columns:
+Panel Name, Equipment, Point name, Control Device, AI, BI, AO, BO, Serial Pt, Terms, Remarks
 
-APPENDIX POINTS ONLY - DO NOT repeat main list:
-- Post-fire smoke purge sequences (PFSP, GX, HPF, SPF)
-- Life safety / emergency pressurization systems
-- Stairwell / hoistway pressurization
+APPENDIX INCLUDES ONLY:
+- Post-fire smoke purge sequences (PFSP, GX, SPF, HPF)
+- Life safety / emergency pressurization
+- Stairwell/hoistway pressurization
 - Fire alarm integration points
-- Emergency shutdown sequences
+- Emergency generator monitoring
+- Backup power / UPS monitoring
 - Future expansion points
-- Backup/UPS monitoring
+- Special high-priority sequences
 
-Same columns as main list.
-NO markdown. START with [ END with ]"""
+DO NOT repeat equipment already in main list.
+
+Use "x" for present I/O types. Leave blank if not applicable.
+
+RULES:
+- ONE ROW PER POINT
+- System-wise organization
+- Same column format as main point list
+- Mark each with appropriate I/O types
+- Include remarks explaining why it's appendix
+
+CRITICAL: Start with [ and end with ]. No markdown.
+
+Example:
+{json.dumps([example_row])}
+
+Extract APPENDIX points only (not in main list):"""
+    
     return prompt
 
 
 def generate_important_notes_prompt(project_name, soo_text):
-    """Generate prompt for Important Notes - estimation."""
-    prompt = f"""You are a BMS project estimator. Extract key points for project estimation.
+    """Generate prompt for Important Notes - for estimation."""
+    
+    prompt = f"""You are a senior BMS project estimator. Extract important notes from SOO for project estimation.
 
 PROJECT: {project_name}
 
 SEQUENCE OF OPERATIONS:
-{soo_text[:8000]}
+{soo_text}
 
-Return ONLY JSON:
+EXTRACT THESE CATEGORIES (as separate lists):
+
+1. DDC COMPLEXITY & WIRING:
+   - Number of hardwired I/O points
+   - Number of network/BACnet points
+   - Special wiring requirements (plenum-rated, conduit, etc.)
+   - Panel complexity (standalone vs large central)
+   - Communication protocols needed
+
+2. SPECIAL INTEGRATIONS:
+   - Fire alarm interface required
+   - BMS to manufacturer controller integration
+   - Third-party system connections (lighting, security, etc.)
+   - Special sensor types (CO2, humidity, enthalpy, etc.)
+
+3. CONTROL SEQUENCES & COMPLEXITY:
+   - Modular staging logic (lead-lag)
+   - Enthalpy wheel modulation
+   - Multi-zone control
+   - VFD speed control complexity
+   - Reset logic or adaptive setpoints
+
+4. SAFETY & INTERLOCKS:
+   - Freeze protection sequences
+   - Emergency pressurization
+   - Fire/smoke damper coordination
+   - Low limit alarms
+   - Interlock requirements
+
+5. COMMISSIONING & STARTUP:
+   - Special startup sequences
+   - Calibration requirements
+   - Balancing requirements
+   - Training needs
+   - Performance testing
+
+6. LEAD TIMES & SUPPLY:
+   - Custom control panels
+   - Special sensors
+   - Manufacturer-specific hardware
+   - Network infrastructure
+
+7. CLIENT REQUIREMENTS:
+   - Pre-approval items
+   - Special documentation
+   - Specific commissioning procedures
+   - Warranty terms
+
+OUTPUT: Return JSON:
+
 {{
-  "ddc_complexity": [
-    "87 total hardwired I/O points distributed across 3 panels",
-    "12 BACnet network points",
-    "Plenum-rated wiring required in return air spaces",
-    "Long sensor runs require shielded twisted pair"
-  ],
-  "special_integrations": [
-    "Fire alarm system 4-wire interface required",
-    "Manufacturer ERV controller BACnet integration",
-    "Third-party lighting control system tie-in"
-  ],
-  "control_sequences": [
-    "Modular ASHP staging (lead-lag-standby configuration)",
-    "Enthalpy wheel logic with demand reset",
-    "Multi-zone VAV with demand-controlled outside air",
-    "Dynamic reset of supply water temperature"
-  ],
-  "safety_interlocks": [
-    "Freeze protection with low temp alarm at 35°F and compressor shutdown",
-    "Fire safety interlock with automatic smoke exhaust on alarm",
-    "Low-pressure alarm with pump protection interlock",
-    "Emergency pressurization on stairwells"
-  ],
-  "commissioning": [
-    "Factory startup of ASHP units required before programming",
-    "Special balancing procedures for VAV boxes",
-    "Sensor calibration check-in before final acceptance",
-    "Performance testing with building fully occupied"
-  ],
-  "lead_times": [
-    "Custom DDC panels - 8 weeks lead time",
-    "Specialized pressure sensors - 4-6 weeks",
-    "BMS network cabling - material only, labor separate"
-  ],
-  "client_requirements": [
-    "Pre-approval of all control logic sequences",
-    "BMS training for facilities team (3 days)",
-    "Spare parts package (1 year supply)",
-    "One-year parts and labor warranty"
-  ]
+  "ddc_complexity": ["point 1", "point 2", ...],
+  "special_integrations": ["point 1", ...],
+  "control_sequences": ["point 1", ...],
+  "safety_interlocks": ["point 1", ...],
+  "commissioning": ["point 1", ...],
+  "lead_times": ["point 1", ...],
+  "client_requirements": ["point 1", ...]
 }}
 
-Extract ALL key points for estimation:
-- DDC complexity (I/O count, wiring, panels, special requirements)
-- Special integrations (fire alarm, manufacturer, third-party)
-- Control sequences (staging, reset logic, multi-zone)
-- Safety & interlocks (freeze protection, emergency, alarms)
-- Commissioning (startup, balancing, testing, training)
-- Lead times (custom hardware, sensors, special materials)
-- Client requirements (approvals, training, warranty)
-
-NO markdown. START with {{ END with }}"""
+CRITICAL: Start with {{ and end with }}. No markdown.
+Focus on details that affect estimation (labor hours, complexity, timeline)."""
+    
     return prompt
 
 
@@ -230,3 +278,13 @@ def parse_notes_response(raw_response):
         return result if isinstance(result, dict) else {}
     except Exception as e:
         return {}
+
+
+if __name__ == "__main__":
+    print("SOO Extractor Module Ready")
+    print("=" * 70)
+    print("\nFunctions:")
+    print("  1. generate_overview_prompt() - Bird's eye view")
+    print("  2. generate_pointlist_prompt() - Main points extraction")
+    print("  3. generate_appendix_prompt() - Appendix points extraction")
+    print("  4. generate_important_notes_prompt() - Estimation notes")
