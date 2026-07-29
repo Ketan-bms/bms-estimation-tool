@@ -1380,7 +1380,7 @@ def _tab_soo(p):
         if st.button("📋 Overview", key="btn_overview", use_container_width=True):
             with st.spinner("Extracting overview..."):
                 try:
-                    from soo_extractor import generate_overview_prompt
+                    from soo_extractor import generate_overview_prompt, parse_overview_response
                 except ImportError as e:
                     st.error(f"❌ Cannot load soo_extractor: {e}")
                     return
@@ -1388,13 +1388,13 @@ def _tab_soo(p):
                 raw = _claude(k, prompt, max_tokens=2000)
                 if raw:
                     try:
-                        data = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
+                        data = parse_overview_response(raw)
                         p["soo_data"]["overview"] = data
                         _save_app_state()
                         st.success("✅ Overview extracted")
                         st.rerun()
-                    except:
-                        st.warning("Could not parse response")
+                    except Exception as e:
+                        st.warning(f"Parse error: {e}")
     
     # ── Button 2: Proposal ─────────────────────────────────────────────────────
     with col2:
@@ -1465,17 +1465,25 @@ def _tab_soo(p):
         with st.expander("📋 Overview (Bird's eye view)"):
             try:
                 overview_data = p["soo_data"]["overview"]
-                if isinstance(overview_data, dict):
+                
+                # Handle different data structures
+                systems_list = []
+                
+                if isinstance(overview_data, list):
+                    systems_list = overview_data
+                elif isinstance(overview_data, dict):
                     if "overview" in overview_data and isinstance(overview_data["overview"], list):
-                        for system in overview_data["overview"]:
-                            if isinstance(system, dict):
-                                st.write(f"**{system.get('System', 'Unknown')}** — {system.get('Equipment_Type', '')}")
-                                st.write(f"Control: {system.get('Control_Approach', '')}")
-                                st.write(f"Points: {system.get('Control_Points', '')}")
-                                st.write(f"Integration: {system.get('Integration', '')}")
-                                st.write("---")
-                    else:
-                        st.json(overview_data)
+                        systems_list = overview_data["overview"]
+                
+                # Display systems
+                if systems_list:
+                    for system in systems_list:
+                        if isinstance(system, dict):
+                            st.write(f"**{system.get('System', 'Unknown')}** — {system.get('Equipment_Type', '')}")
+                            st.write(f"Control: {system.get('Control_Approach', '')}")
+                            st.write(f"Points: {system.get('Control_Points', '')}")
+                            st.write(f"Integration: {system.get('Integration', '')}")
+                            st.write("---")
                 else:
                     st.json(overview_data)
             except Exception as e:
