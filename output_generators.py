@@ -4,6 +4,8 @@ Generates Word proposals and Excel estimates from analysis results
 """
 
 import json
+import os
+import re
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -24,6 +26,40 @@ class OutputGenerator:
     # WORD PROPOSAL GENERATION
     # ============================================================================
     
+    @staticmethod
+    def _num(value, default=0):
+        """Coerce a model-supplied value to a number.
+
+        Claude returns JSON, but a field typed as a number in the prompt can
+        still come back as "40", "$150", "40 hours", or null. Every one of
+        those blows up an f-string format spec like :,.0f, so coerce here
+        rather than trusting the shape.
+        """
+        if isinstance(value, (int, float)):
+            return value
+        if value is None:
+            return default
+        cleaned = re.sub(r"[^0-9.\-]", "", str(value))
+        try:
+            return float(cleaned) if cleaned not in ("", "-", ".") else default
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _safe_table_style(table, style_name):
+        """Apply a table style, falling back if the template lacks it.
+
+        A user-supplied .docx template may not define the style, in which
+        case python-docx raises KeyError and kills the whole document.
+        """
+        try:
+            table.style = style_name
+        except KeyError:
+            try:
+                table.style = "Table Grid"
+            except KeyError:
+                pass
+
     def generate_word_proposal(self, analysis_results, project_name, output_path):
         """Generate professional Word proposal from analysis results"""
         
@@ -82,7 +118,7 @@ class OutputGenerator:
             if labor_breakdown:
                 # Create table
                 table = doc.add_table(rows=1, cols=4)
-                table.style = 'Light Grid Accent 1'
+                self._safe_table_style(table, 'Light Grid Accent 1')
                 
                 # Header row
                 header_cells = table.rows[0].cells
@@ -102,8 +138,8 @@ class OutputGenerator:
                 for task, data in labor_breakdown.items():
                     if isinstance(data, dict):
                         row = table.add_row()
-                        hours = data.get("hours", 0)
-                        rate = data.get("rate", 0)
+                        hours = self._num(data.get("hours"))
+                        rate = self._num(data.get("rate"))
                         cost = hours * rate
                         total_cost += cost
                         
@@ -139,7 +175,7 @@ class OutputGenerator:
                 # Create points table
                 if len(points) > 0:
                     table = doc.add_table(rows=1, cols=5)
-                    table.style = 'Light Grid Accent 1'
+                    self._safe_table_style(table, 'Light Grid Accent 1')
                     
                     header_cells = table.rows[0].cells
                     header_cells[0].text = "Panel"
@@ -184,8 +220,8 @@ class OutputGenerator:
             metadata = analysis_results.get("metadata", {})
             doc.add_paragraph(f"Total I/O Points: {metadata.get('total_i_o_count', 0)}")
             doc.add_paragraph(f"Total Control Points: {len(points)}")
-            doc.add_paragraph(f"Estimated Labor: {labor.get('total_hours', 0)} hours")
-            doc.add_paragraph(f"Estimated Labor Cost: ${labor.get('total_labor_cost', 0):,.0f}")
+            doc.add_paragraph(f"Estimated Labor: {self._num(labor.get('total_hours')):,.0f} hours")
+            doc.add_paragraph(f"Estimated Labor Cost: ${self._num(labor.get('total_labor_cost')):,.0f}")
             
             # ===== NEXT STEPS =====
             doc.add_heading("Next Steps", level=2)
@@ -196,12 +232,13 @@ class OutputGenerator:
             
             # Save document
             doc.save(output_path)
-            print(f"✅ Word proposal saved: {output_path}")
             return True
             
         except Exception as e:
-            print(f"❌ Error generating Word proposal: {str(e)}")
-            return False
+            # Do not swallow. print() goes to the server console where the
+            # user never sees it, and the caller then tries to open a file
+            # that was never written.
+            raise RuntimeError("Word proposal generation failed: %s" % e) from e
     
     # ============================================================================
     # EXCEL ESTIMATE GENERATION
@@ -239,9 +276,9 @@ class OutputGenerator:
             labor = analysis_results.get("labor_estimate", {})
             ws_summary['A15'] = "Labor Summary"
             ws_summary['A16'] = "Total Labor Hours"
-            ws_summary['C16'] = labor.get("total_hours", 0)
+            ws_summary['C16'] = self._num(labor.get("total_hours"))
             ws_summary['A17'] = "Total Labor Cost"
-            ws_summary['C17'] = labor.get("total_labor_cost", 0)
+            ws_summary['C17'] = self._num(labor.get("total_labor_cost"))
             
             # Format as currency
             for row in [9, 10, 11, 12, 13, 17]:
@@ -293,8 +330,8 @@ class OutputGenerator:
             
             for task, data in labor_breakdown.items():
                 if isinstance(data, dict):
-                    hours = data.get("hours", 0)
-                    rate = data.get("rate", 0)
+                    hours = self._num(data.get("hours"))
+                    rate = self._num(data.get("rate"))
                     cost = hours * rate
                     total_cost += cost
                     
@@ -341,12 +378,10 @@ class OutputGenerator:
             
             # Save workbook
             wb.save(output_path)
-            print(f"✅ Excel estimate saved: {output_path}")
             return True
             
         except Exception as e:
-            print(f"❌ Error generating Excel estimate: {str(e)}")
-            return False
+            raise RuntimeError("Excel estimate generation failed: %s" % e) from e
     
     # ============================================================================
     # BULK EXPORT
@@ -358,20 +393,15 @@ class OutputGenerator:
         word_path = f"{output_dir}/{project_name}_Proposal.docx"
         excel_path = f"{output_dir}/{project_name}_Estimate.xlsx"
         
-        print(f"\n📊 Generating outputs for: {project_name}")
-        print(f"📁 Output directory: {output_dir}")
-        
         self.generate_word_proposal(analysis_results, project_name, word_path)
         self.generate_excel_estimate(analysis_results, project_name, excel_path)
-        
-        print(f"\n✅ All outputs generated successfully!")
-        print(f"   - Proposal: {word_path}")
-        print(f"   - Estimate: {excel_path}")
-        
-        return {
-            "proposal": word_path,
-            "estimate": excel_path
-        }
+
+        outputs = {}
+        if os.path.exists(word_path):
+            outputs["proposal"] = word_path
+        if os.path.exists(excel_path):
+            outputs["estimate"] = excel_path
+        return outputs
 
 
 # ============================================================================
