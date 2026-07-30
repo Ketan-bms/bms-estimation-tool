@@ -72,7 +72,7 @@ SOO TEXT (first 5000 chars - summary):
 If SOO is longer, focus on scope items, not implementation details."""
         
         message = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-opus-4-8",
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -127,7 +127,7 @@ Rules:
 - Return ONLY the JSON array, nothing else"""
         
         message = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-opus-4-8",
             max_tokens=4000,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -196,7 +196,7 @@ Consider:
 - Risk factors"""
         
         message = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-opus-4-8",
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -237,7 +237,7 @@ Return ONLY valid JSON:
 }}"""
         
         message = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-opus-4-8",
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
