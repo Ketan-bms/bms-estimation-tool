@@ -69,13 +69,13 @@ Return ONLY valid JSON (no markdown, no code blocks):
 }}
 
 SOO TEXT (first 5000 chars - summary):
-{soo_text[:5000]}
+{soo_text}
 
-If SOO is longer, focus on scope items, not implementation details."""
+This is the complete SOO. Cover every system described anywhere in it."""
         
         message = self.client.messages.create(
             model="claude-opus-5",
-            max_tokens=1500,
+            max_tokens=4000,
             messages=[{"role": "user", "content": prompt}]
         )
         
@@ -118,7 +118,7 @@ Return ONLY valid JSON array (no markdown):
 ]
 
 Extract from SOO:
-{soo_text[:8000]}
+{soo_text}
 
 Rules:
 - Temperature/pressure/humidity sensors = AI
@@ -130,26 +130,39 @@ Rules:
         
         message = self.client.messages.create(
             model="claude-opus-5",
-            max_tokens=4000,
+            max_tokens=32000,
             messages=[{"role": "user", "content": prompt}]
         )
         
         response_text = self._extract_text(message).strip()
-        # Try to parse JSON
+
+        if not response_text:
+            raise ValueError(
+                "Point list: model returned no text. "
+                "Response blocks: %s" % [getattr(b, "type", "?") for b in message.content]
+            )
+
+        cleaned = re.sub(r'```json\s*', '', response_text)
+        cleaned = re.sub(r'```\s*', '', cleaned)
+
+        start = cleaned.find('[')
+        end = cleaned.rfind(']') + 1
+        if start < 0 or end <= start:
+            raise ValueError(
+                "Point list: no JSON array found in response. "
+                "First 500 chars:\n%s" % cleaned[:500]
+            )
+
         try:
-            # Remove markdown if present
-            response_text = re.sub(r'```json\s*', '', response_text)
-            response_text = re.sub(r'```\s*', '', response_text)
-            
-            start = response_text.find('[')
-            end = response_text.rfind(']') + 1
-            if start >= 0 and end > start:
-                json_str = response_text[start:end]
-                return json.loads(json_str)
-        except:
-            pass
-        
-        return []
+            return json.loads(cleaned[start:end])
+        except json.JSONDecodeError as e:
+            # Most likely cause: response hit max_tokens and the array was
+            # cut off mid-object. Say so rather than returning an empty list.
+            raise ValueError(
+                "Point list: JSON was malformed (%s). This usually means the "
+                "response was truncated - stop_reason was '%s'. Last 300 chars:\n%s"
+                % (e, getattr(message, "stop_reason", "unknown"), cleaned[-300:])
+            )
     
     # ============================================================================
     # STEP 4: LABOR ESTIMATION (Claude AI)
@@ -167,7 +180,7 @@ Project Statistics:
 - System Complexity: Analyze from SOO
 
 SOO Summary:
-{soo_text[:3000]}
+{soo_text}
 
 Estimate hours for these roles (realistic NYC/Boston market, 2025):
 1. Engineering & Design (20-50 hrs)
@@ -199,7 +212,7 @@ Consider:
         
         message = self.client.messages.create(
             model="claude-opus-5",
-            max_tokens=1000,
+            max_tokens=3000,
             messages=[{"role": "user", "content": prompt}]
         )
         
@@ -219,7 +232,7 @@ Consider:
 3. Risk Items - what could cause problems if missed
 
 SOO:
-{soo_text[:4000]}
+{soo_text}
 
 Return ONLY valid JSON:
 
@@ -240,7 +253,7 @@ Return ONLY valid JSON:
         
         message = self.client.messages.create(
             model="claude-opus-5",
-            max_tokens=1000,
+            max_tokens=3000,
             messages=[{"role": "user", "content": prompt}]
         )
         
@@ -321,6 +334,7 @@ Return ONLY valid JSON:
             "rfis": rfis,
             "metadata": {
                 "soo_pages": self.soo_text.count("--- PAGE"),
+                "soo_characters": len(self.soo_text),
                 "total_points_extracted": len(points),
                 "total_i_o_count": sum(int(p.get('Qty', 1) or 1) for p in points)
             }

@@ -321,13 +321,25 @@ if "analysis_results" in st.session_state:
     with tab5:
         metadata = results.get("metadata", {})
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("SOO Pages", metadata.get("soo_pages", 0))
         with col2:
-            st.metric("Points Extracted", metadata.get("total_points_extracted", 0))
+            st.metric("Characters Read", f"{metadata.get('soo_characters', 0):,}")
         with col3:
+            st.metric("Points Extracted", metadata.get("total_points_extracted", 0))
+        with col4:
             st.metric("Total I/O Count", metadata.get("total_i_o_count", 0))
+
+        pages = metadata.get("soo_pages", 0)
+        chars = metadata.get("soo_characters", 0)
+        if pages and chars / pages < 200:
+            st.warning(
+                f"Only {chars:,} characters across {pages} pages "
+                f"({chars // pages:,} per page). That is very low for a text "
+                "SOO - the PDF may be scanned images rather than a text layer, "
+                "in which case PyMuPDF cannot read it and OCR would be needed."
+            )
     
     # ===== GENERATE OUTPUTS =====
     
