@@ -91,19 +91,40 @@ st.divider()
 
 st.sidebar.title("⚙️ Settings")
 
-api_key = st.sidebar.text_input(
-    "Anthropic API Key",
-    type="password",
-    help="Get from https://console.anthropic.com/keys"
-)
 
-# Strip whitespace/newlines. Pasted keys often carry a trailing space,
-# which makes an illegal HTTP header and fails as a generic "Connection error".
-api_key = api_key.strip() if api_key else ""
+def _stored_api_key():
+    """Read the key from Streamlit secrets, if one has been configured.
+
+    st.secrets raises when no secrets are configured at all (local runs,
+    fresh deploys), so this must not be allowed to crash the app.
+    """
+    try:
+        return str(st.secrets.get("ANTHROPIC_API_KEY", "")).strip()
+    except Exception:
+        return ""
+
+
+api_key = _stored_api_key()
+
+if api_key:
+    st.sidebar.success("API key loaded from app settings")
+else:
+    api_key = st.sidebar.text_input(
+        "Anthropic API Key",
+        type="password",
+        help="Get from https://console.anthropic.com/keys",
+    )
+    # Pasted keys often carry a trailing space, which makes an illegal HTTP
+    # header and fails as an opaque "Connection error".
+    api_key = api_key.strip() if api_key else ""
 
 if not api_key:
-    st.sidebar.warning("⚠️ Please enter your Anthropic API key to continue")
-    st.info("**How to get API key:**\n1. Go to https://console.anthropic.com/keys\n2. Sign up or login\n3. Create new API key\n4. Paste it above")
+    st.sidebar.warning("Enter your Anthropic API key to continue")
+    st.info(
+        "**To avoid entering the key each time:** in Streamlit Cloud open "
+        "Manage app -> Settings -> Secrets and add a line reading "
+        "`ANTHROPIC_API_KEY = \"sk-ant-...\"`, then reboot the app."
+    )
     st.stop()
 
 st.sidebar.divider()
