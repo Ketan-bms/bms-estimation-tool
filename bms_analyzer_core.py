@@ -29,8 +29,13 @@ class BMSAnalyzer:
     # STEP 1: PDF TEXT EXTRACTION
     # ============================================================================
     
-    def extract_pdf_text(self, pdf_path):
-        """Extract all text from PDF file"""
+    @staticmethod
+    def extract_pdf_text(pdf_path):
+        """Extract all text from a PDF, tagging each page.
+
+        Static so the UI can read a document for the structure preview
+        without constructing an analyzer or supplying an API key.
+        """
         try:
             doc = fitz.open(pdf_path)
             text = ""
@@ -85,7 +90,8 @@ This is the complete SOO. Cover every system described anywhere in it."""
     # STEP 3: POINT LIST GENERATION (Claude AI)
     # ============================================================================
     
-    def generate_point_list(self, soo_text, progress_callback=None):
+    def generate_point_list(self, soo_text, progress_callback=None,
+                            section_filter=None):
         """Extract control points section by section.
 
         One call per SOO section rather than one call for the whole document.
@@ -100,6 +106,16 @@ This is the complete SOO. Cover every system described anywhere in it."""
         from soo_chunker import build_chunks, coverage_report
 
         chunks = build_chunks(soo_text)
+
+        # A caller may restrict the run to sections it has reviewed, which
+        # both avoids paying for sections known to be irrelevant and keeps
+        # the result aligned to what was actually approved.
+        if section_filter is not None:
+            wanted = set(section_filter)
+            chunks = [c for c in chunks if c.label in wanted]
+            if not chunks:
+                raise ValueError("No sections selected for extraction.")
+
         self.coverage = coverage_report(soo_text, chunks)
         self.section_results = []
 
@@ -472,7 +488,7 @@ Return ONLY valid JSON:
             return 1
 
     def run_full_analysis(self, soo_pdf_path, spec_pdf_path=None,
-                          progress_callback=None):
+                          progress_callback=None, section_filter=None):
         """Run the full pipeline.
 
         progress_callback(done, total, label) is forwarded to the point-list
@@ -491,7 +507,9 @@ Return ONLY valid JSON:
         scope = self.analyze_scope_overview(self.soo_text)
 
         points = self.generate_point_list(
-            self.soo_text, progress_callback=progress_callback
+            self.soo_text,
+            progress_callback=progress_callback,
+            section_filter=section_filter,
         )
 
         step("Estimating labour")

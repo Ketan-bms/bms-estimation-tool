@@ -17,18 +17,16 @@ from pathlib import Path
 
 try:
     from bms_analyzer_core import BMSAnalyzer
-from soo_chunker import build_chunks, coverage_report
-import project_store
-    print("✅ bms_analyzer_core imported successfully")
-except ImportError as e:
-    st.error(f"❌ Error importing bms_analyzer_core: {str(e)}")
-    st.stop()
-
-try:
     from output_generators import OutputGenerator
-    print("✅ output_generators imported successfully")
+    from soo_chunker import build_chunks, coverage_report
+    import project_store
 except ImportError as e:
-    st.error(f"❌ Error importing output_generators: {str(e)}")
+    st.error(
+        f"A required module could not be imported: {e}\n\n"
+        "Check that app.py, bms_analyzer_core.py, output_generators.py, "
+        "soo_chunker.py and project_store.py are all present in the "
+        "repository."
+    )
     st.stop()
 
 # ============================================================================
@@ -235,9 +233,7 @@ if soo_file:
                 tmp_pdf = os.path.join(tmpdir, "soo.pdf")
                 with open(tmp_pdf, "wb") as f:
                     f.write(soo_file.getbuffer())
-                st.session_state.soo_text = BMSAnalyzer.extract_pdf_text(
-                    None, tmp_pdf
-                )
+                st.session_state.soo_text = BMSAnalyzer.extract_pdf_text(tmp_pdf)
         st.session_state.soo_token = file_token
         st.session_state.pop("analysis_results", None)
 
@@ -371,9 +367,42 @@ if soo_file:
 if "analysis_results" in st.session_state:
     
     results = st.session_state.analysis_results
-    project_name_hint = (
-        soo_file.name.rsplit(".", 1)[0] if soo_file else "BMS_Project"
+
+    st.markdown('<p class="section-style">Project</p>', unsafe_allow_html=True)
+    pc1, pc2 = st.columns([2, 1])
+    default_name = st.session_state.get(
+        "loaded_project",
+        soo_file.name.rsplit(".", 1)[0] if soo_file else "Untitled project",
     )
+    project_label = pc1.text_input("Project name", value=default_name,
+                                   key="project_label")
+
+    record = project_store.make_record(
+        project_label,
+        soo_file.name if soo_file else st.session_state.get("loaded_project", ""),
+        results,
+    )
+
+    if pc2.button("Save to session", use_container_width=True):
+        registry.save(record)
+        st.session_state.loaded_project = project_label
+        st.success(f"Saved '{project_label}'. Export it to keep it permanently.")
+
+    st.download_button(
+        "Export project file",
+        data=project_store.to_json(record),
+        file_name=project_store.export_filename(project_label),
+        mime="application/json",
+        help="A portable copy of this analysis. Re-open it from the sidebar.",
+    )
+
+    if len(registry):
+        with st.expander(f"Projects in this session ({len(registry)})"):
+            st.dataframe(registry.rows(), use_container_width=True)
+
+    st.divider()
+
+    project_name_hint = project_label or "BMS_Project"
     
     st.markdown('<p class="section-style">📊 Step 3: Analysis Results</p>', unsafe_allow_html=True)
     
