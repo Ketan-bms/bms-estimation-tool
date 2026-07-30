@@ -77,7 +77,7 @@ If SOO is longer, focus on scope items, not implementation details."""
             messages=[{"role": "user", "content": prompt}]
         )
         
-        return self._parse_json_response(message.content[0].text)
+        return self._parse_json_response(self._extract_text(message))
     
     # ============================================================================
     # STEP 3: POINT LIST GENERATION (Claude AI)
@@ -132,7 +132,7 @@ Rules:
             messages=[{"role": "user", "content": prompt}]
         )
         
-        response_text = message.content[0].text.strip()
+        response_text = self._extract_text(message).strip()
         # Try to parse JSON
         try:
             # Remove markdown if present
@@ -201,7 +201,7 @@ Consider:
             messages=[{"role": "user", "content": prompt}]
         )
         
-        return self._parse_json_response(message.content[0].text)
+        return self._parse_json_response(self._extract_text(message))
     
     # ============================================================================
     # STEP 5: RFI & EXCLUSIONS DETECTION
@@ -242,12 +242,27 @@ Return ONLY valid JSON:
             messages=[{"role": "user", "content": prompt}]
         )
         
-        return self._parse_json_response(message.content[0].text)
+        return self._parse_json_response(self._extract_text(message))
     
     # ============================================================================
     # UTILITY: JSON PARSER
     # ============================================================================
     
+    def _extract_text(self, message):
+        """Pull the text out of a Claude response.
+
+        message.content is a list of blocks. With extended thinking enabled,
+        block 0 is a ThinkingBlock (no .text attribute), so we filter for
+        text blocks and join them rather than indexing blindly.
+        """
+        parts = []
+        for block in message.content:
+            if getattr(block, "type", None) == "text":
+                parts.append(block.text)
+            elif hasattr(block, "text"):
+                parts.append(block.text)
+        return "\n".join(parts).strip()
+
     def _parse_json_response(self, text):
         """Parse JSON from Claude response, handling markdown"""
         try:
