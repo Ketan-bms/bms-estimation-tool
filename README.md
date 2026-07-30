@@ -337,19 +337,6 @@ Built by Ketan - Senior BMS PM transitioning to Product Management
 
 ---
 
-## 🎓 Interview-Ready Demo
-
-This tool demonstrates:
-
-✅ **Problem-solving** - Identified real pain point, built solution  
-✅ **Full-stack skills** - Backend (Python, AI), Frontend (Streamlit), DevOps (Deployment)  
-✅ **AI/ML integration** - Claude API, prompt engineering, JSON parsing  
-✅ **Product thinking** - MVP approach, user-focused, scalable roadmap  
-✅ **Measurable impact** - 100x faster on core task  
-
-Perfect for PM interviews! 🎯
-
----
 
 ## 📊 Try It Now
 
