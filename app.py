@@ -234,6 +234,9 @@ if soo_file:
 if "analysis_results" in st.session_state:
     
     results = st.session_state.analysis_results
+    project_name_hint = (
+        soo_file.name.rsplit(".", 1)[0] if soo_file else "BMS_Project"
+    )
     
     st.markdown('<p class="section-style">📊 Step 3: Analysis Results</p>', unsafe_allow_html=True)
     
@@ -301,6 +304,40 @@ if "analysis_results" in st.session_state:
             shown = [p for p in points if p.get("Confidence", "low") in levels]
             st.caption(f"Showing {len(shown)} of {len(points)} points")
             st.dataframe(shown, use_container_width=True, height=400)
+
+            # Export the filtered view, so a reviewer can pull just the
+            # high-confidence rows if that is what they want to work from.
+            export_filtered = len(shown) != len(points)
+            try:
+                import io as _io
+                import tempfile as _tf
+
+                subset = dict(results)
+                subset["point_list"] = shown if export_filtered else points
+
+                with _tf.TemporaryDirectory() as _d:
+                    _path = os.path.join(_d, "points.xlsx")
+                    OutputGenerator().generate_point_list_excel(
+                        subset,
+                        project_name_hint,
+                        _path,
+                    )
+                    with open(_path, "rb") as _f:
+                        _data = _f.read()
+
+                label = (
+                    f"Download point list ({len(shown)} filtered rows)"
+                    if export_filtered
+                    else f"Download point list ({len(points)} rows)"
+                )
+                st.download_button(
+                    label=label,
+                    data=_data,
+                    file_name=f"{project_name_hint}_Point_List.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            except Exception as e:
+                st.error(f"Could not build the point list workbook: {e}")
 
             col1, col2, col3, col4 = st.columns(4)
             ai_count = sum(1 for p in points if p.get("AI"))
@@ -521,8 +558,23 @@ if "analysis_results" in st.session_state:
                                 use_container_width=True
                             )
                 
+                # Standalone point list
+                pl_path = os.path.join(tmpdir, f"{project_name}_Point_List.xlsx")
+                OutputGenerator().generate_point_list_excel(
+                    results, project_name, pl_path
+                )
+                with open(pl_path, "rb") as f:
+                    with col3:
+                        st.download_button(
+                            label="Point List (Excel)",
+                            data=f.read(),
+                            file_name=f"{project_name}_Point_List.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                        )
+
                 # JSON
-                with col3:
+                with col1:
                     st.download_button(
                         label="📋 JSON Analysis",
                         data=json.dumps(results, indent=2),

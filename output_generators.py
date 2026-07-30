@@ -409,6 +409,149 @@ class OutputGenerator:
     # BULK EXPORT
     # ============================================================================
     
+    # ============================================================================
+    # STANDALONE POINT LIST EXPORT
+    # ============================================================================
+
+    POINT_COLUMNS = [
+        ("Panel", "Panel", 14),
+        ("Equipment", "Equipment", 16),
+        ("Point_Name", "Point Name", 30),
+        ("Control Device", "Control Device", 16),
+        ("AI", "AI", 5),
+        ("BI", "BI", 5),
+        ("AO", "AO", 5),
+        ("BO", "BO", 5),
+        ("Qty", "Qty", 6),
+        ("Description", "Remarks", 46),
+        ("Confidence", "Confidence", 12),
+        ("Source_Section", "Source Section", 42),
+        ("Source_Pages", "SOO Pages", 11),
+        ("Evidence", "Evidence (verbatim)", 46),
+        ("Repeats_In_Sections", "Repeats", 9),
+    ]
+
+    def generate_point_list_excel(self, analysis_results, project_name, output_path):
+        """Write the point list as a standalone workbook.
+
+        Two sheets: the points themselves, and a per-section summary so a
+        reviewer can see where each block of points came from and which
+        sections produced none. Filtering and freezing are set up so the
+        sheet is usable for review without further formatting.
+        """
+        try:
+            points = analysis_results.get("point_list", [])
+            metadata = analysis_results.get("metadata", {})
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Point List"
+
+            header_fill = PatternFill(start_color="1F3864", end_color="1F3864",
+                                      fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF")
+
+            for col_idx, (_, label, width) in enumerate(self.POINT_COLUMNS, 1):
+                cell = ws.cell(1, col_idx)
+                cell.value = label
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center",
+                                           wrap_text=True)
+                ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+            conf_fill = {
+                "high": PatternFill(start_color="E6F4EA", end_color="E6F4EA", fill_type="solid"),
+                "medium": PatternFill(start_color="FFF7E0", end_color="FFF7E0", fill_type="solid"),
+                "low": PatternFill(start_color="FCE8E6", end_color="FCE8E6", fill_type="solid"),
+            }
+            conf_col = [k for k, _, _ in self.POINT_COLUMNS].index("Confidence") + 1
+
+            for row_idx, point in enumerate(points, 2):
+                for col_idx, (key, _, _) in enumerate(self.POINT_COLUMNS, 1):
+                    value = point.get(key, "")
+                    if key == "Qty":
+                        value = self._num(value, default=1)
+                    ws.cell(row_idx, col_idx).value = value
+                    ws.cell(row_idx, col_idx).alignment = Alignment(
+                        vertical="top", wrap_text=(key in ("Description", "Evidence"))
+                    )
+                fill = conf_fill.get(str(point.get("Confidence", "")).lower())
+                if fill:
+                    ws.cell(row_idx, conf_col).fill = fill
+
+            ws.freeze_panes = "C2"
+            if points:
+                ws.auto_filter.ref = (
+                    f"A1:{get_column_letter(len(self.POINT_COLUMNS))}{len(points) + 1}"
+                )
+
+            # ---- Summary sheet ----
+            ws2 = wb.create_sheet("Summary")
+            ws2["A1"] = "Point List Summary"
+            ws2["A1"].font = Font(bold=True, size=14)
+
+            ws2["A3"] = "Project"
+            ws2["B3"] = project_name
+            ws2["A4"] = "Generated"
+            ws2["B4"] = self.timestamp
+            ws2["A5"] = "SOO pages"
+            ws2["B5"] = metadata.get("soo_pages", "")
+            ws2["A6"] = "Rows in list"
+            ws2["B6"] = len(points)
+            ws2["A7"] = "Total I/O (sum of Qty)"
+            ws2["B7"] = metadata.get("total_i_o_count", "")
+
+            coverage = metadata.get("coverage", {}) or {}
+            ws2["A8"] = "Document covered"
+            ws2["B8"] = f"{coverage.get('coverage_pct', '')}%"
+
+            counts = metadata.get("confidence_counts", {}) or {}
+            ws2["A10"] = "Confidence"
+            ws2["A10"].font = Font(bold=True)
+            for i, level in enumerate(("high", "medium", "low"), start=11):
+                ws2[f"A{i}"] = level.title()
+                ws2[f"B{i}"] = counts.get(level, 0)
+
+            io_totals = {}
+            for point in points:
+                for io in ("AI", "BI", "AO", "BO"):
+                    if str(point.get(io, "")).strip():
+                        io_totals[io] = io_totals.get(io, 0) + self._num(
+                            point.get("Qty"), default=1
+                        )
+            ws2["A15"] = "I/O by type (Qty weighted)"
+            ws2["A15"].font = Font(bold=True)
+            for i, io in enumerate(("AI", "BI", "AO", "BO"), start=16):
+                ws2[f"A{i}"] = io
+                ws2[f"B{i}"] = io_totals.get(io, 0)
+
+            ws2["A21"] = "Points by section"
+            ws2["A21"].font = Font(bold=True)
+            ws2["A22"] = "Section"
+            ws2["B22"] = "Pages"
+            ws2["C22"] = "Points"
+            ws2["D22"] = "Status"
+            for c in ("A22", "B22", "C22", "D22"):
+                ws2[c].font = Font(bold=True)
+
+            for i, row in enumerate(metadata.get("sections", []), start=23):
+                ws2[f"A{i}"] = row.get("section", "")
+                ws2[f"B{i}"] = row.get("pages", "")
+                ws2[f"C{i}"] = row.get("points", 0)
+                ws2[f"D{i}"] = row.get("status", "")
+
+            ws2.column_dimensions["A"].width = 46
+            ws2.column_dimensions["B"].width = 14
+            ws2.column_dimensions["C"].width = 10
+            ws2.column_dimensions["D"].width = 10
+
+            wb.save(output_path)
+            return True
+
+        except Exception as e:
+            raise RuntimeError("Point list export failed: %s" % e) from e
+
     def export_all_outputs(self, analysis_results, project_name, output_dir):
         """Generate all output files at once"""
         
