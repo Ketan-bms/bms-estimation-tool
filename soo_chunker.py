@@ -26,6 +26,15 @@ _PART = re.compile(r'^\s*(PART\s+\d+\b.*)$', re.IGNORECASE)
 # Page markers inserted during PDF extraction
 _PAGE_MARKER = re.compile(r'^--- PAGE (\d+) ---\s*$')
 
+# A subsection letter alone on a line: "A.", "B."
+# Specifications differ in how deep the equipment level sits. Some put each
+# system under its own N.N heading; others put every system under a single
+# heading such as "3.2 SEQUENCE OF OPERATION" and separate them by letter.
+# Detecting both means one chunker handles both layouts.
+# Single or double letter: specifications that run past Z continue with
+# AA, BB, CC. Missing those loses every system past the twenty-sixth.
+_LETTER_HEADING = re.compile(r'^\s*([A-Z]{1,2})\.\s*$')
+
 # Sections that are contractual boilerplate rather than control sequences.
 # Kept as data, not hardcoded logic, so it can be adjusted per specification.
 BOILERPLATE_TITLES = (
@@ -42,15 +51,22 @@ BOILERPLATE_TITLES = (
 class Section:
     """One section of the SOO, with the pages it came from."""
 
-    __slots__ = ("number", "title", "text", "start_page", "end_page", "is_sequence")
+    __slots__ = ("number", "title", "text", "start_page", "end_page",
+                 "is_sequence", "line_start", "page_map")
 
-    def __init__(self, number, title, text, start_page, end_page, is_sequence):
+    def __init__(self, number, title, text, start_page, end_page, is_sequence,
+                 line_start=0, page_map=None):
         self.number = number
         self.title = title
         self.text = text
         self.start_page = start_page
         self.end_page = end_page
         self.is_sequence = is_sequence
+        # Absolute line index in the source document, plus the document-wide
+        # line->page map. Without these a subsection inherits its parent's
+        # page span, which for a 100-page section is useless as provenance.
+        self.line_start = line_start
+        self.page_map = page_map or []
 
     @property
     def label(self):
@@ -119,7 +135,8 @@ def parse_sections(text):
 
     if not headings:
         return [Section("", "Full document", text, 1,
-                        page_at_line[-1] if page_at_line else 1, True)]
+                        page_at_line[-1] if page_at_line else 1, True,
+                        line_start=0, page_map=page_at_line)]
 
     sections = []
     for idx, (line_no, number, title) in enumerate(headings):
@@ -134,12 +151,119 @@ def parse_sections(text):
             start_page=page_at_line[line_no],
             end_page=page_at_line[min(end_line, len(page_at_line)) - 1],
             is_sequence=not _looks_like_boilerplate(number, title),
+            line_start=line_no,
+            page_map=page_at_line,
         ))
     return sections
 
 
+def find_subsections(text):
+    """Locate lettered subsection headings and their titles.
+
+    Returns (line_index, letter, title). A heading is a bare "A." followed by
+    a short line that does not read as a sentence. The title may be Title
+    Case or upper case, so casing is not used as the test; length and the
+    absence of terminal punctuation are more reliable across specifications.
+    """
+    lines = text.split("\n")
+    out = []
+    for i, line in enumerate(lines):
+        m = _LETTER_HEADING.match(line)
+        if not m:
+            continue
+        title = ""
+        for j in range(i + 1, min(i + 3, len(lines))):
+            candidate = lines[j].strip()
+            if candidate:
+                title = candidate
+                break
+        if not title or len(title) > 110:
+            continue
+        # A heading names a thing; a body line finishes a sentence.
+        if title.endswith((".", ";", ":", ",")):
+            continue
+        if len(title.split()) > 16:
+            continue
+        out.append((i, m.group(1), title))
+    return out
+
+
+def _split_by_subsections(section, max_chars):
+    """Split a long section at its lettered subsection headings.
+
+    Each child records its own absolute line span so its page range is
+    computed from the document, not inherited from the parent. A 100-page
+    parent section would otherwise stamp every child with the same useless
+    span.
+    """
+    subs = find_subsections(section.text)
+    if len(subs) < 2:
+        return None
+
+    lines = section.text.split("\n")
+    pieces = []
+    for idx, (line_no, letter, title) in enumerate(subs):
+        stop = subs[idx + 1][0] if idx + 1 < len(subs) else len(lines)
+        body = "\n".join(lines[line_no:stop]).strip()
+        if body:
+            pieces.append({
+                "label": f"{letter}. {title}",
+                "body": body,
+                "line_no": line_no,
+                "stop": stop,
+            })
+
+    if not pieces:
+        return None
+
+    page_map = section.page_map
+    out = []
+    for piece in pieces:
+        abs_start = section.line_start + piece["line_no"]
+        abs_end = section.line_start + piece["stop"] - 1
+
+        if page_map:
+            start_page = page_map[min(abs_start, len(page_map) - 1)]
+            end_page = page_map[min(abs_end, len(page_map) - 1)]
+        else:
+            start_page, end_page = section.start_page, section.end_page
+
+        child = Section(
+            number=section.number,
+            title=(f"{section.title} - {piece['label']}"
+                   if section.title else piece["label"]),
+            text=piece["body"],
+            start_page=start_page,
+            end_page=end_page,
+            is_sequence=section.is_sequence,
+            line_start=abs_start,
+            page_map=page_map,
+        )
+        # A single subsection can still exceed the budget; fall back to
+        # paragraphs, which keeps the narrowed page range already computed.
+        if len(child.text) > max_chars:
+            out.extend(_split_by_paragraphs(child, max_chars))
+        else:
+            out.append(child)
+    return out
+
+
 def _split_oversized(section, max_chars):
-    """Break one very long section into paragraph-aligned pieces.
+    """Break one very long section into smaller chunks.
+
+    Prefer the document's own subsection headings, which keep each chunk
+    aligned to one system and give it a meaningful label. Only fall back to
+    paragraph splitting when no subsection structure exists, since labels
+    like "part 2 of 5" carry no provenance value.
+    """
+    by_subsection = _split_by_subsections(section, max_chars)
+    if by_subsection:
+        return by_subsection
+    return _split_by_paragraphs(section, max_chars)
+
+
+def _split_by_paragraphs(section, max_chars):
+    """Last-resort split at paragraph boundaries.
 
     Splitting mid-sentence would strand a point description away from its
     equipment tag, so paragraph boundaries are used and each piece keeps the
@@ -167,6 +291,8 @@ def _split_oversized(section, max_chars):
             start_page=section.start_page,
             end_page=section.end_page,
             is_sequence=section.is_sequence,
+            line_start=section.line_start,
+            page_map=section.page_map,
         ))
     return out
 

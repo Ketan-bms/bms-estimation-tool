@@ -17,6 +17,8 @@ from pathlib import Path
 
 try:
     from bms_analyzer_core import BMSAnalyzer
+from soo_chunker import build_chunks, coverage_report
+import project_store
     print("✅ bms_analyzer_core imported successfully")
 except ImportError as e:
     st.error(f"❌ Error importing bms_analyzer_core: {str(e)}")
@@ -89,6 +91,52 @@ st.divider()
 # SIDEBAR - API KEY & SETTINGS
 # ============================================================================
 
+@st.cache_resource
+def _registry():
+    """One registry shared across refreshes for the life of the process."""
+    return project_store.ProjectRegistry()
+
+
+registry = _registry()
+
+# ---- Projects ----
+st.sidebar.title("Projects")
+
+if len(registry):
+    st.sidebar.caption(f"{len(registry)} project(s) held in this session")
+    choice = st.sidebar.selectbox(
+        "Open a saved project",
+        ["-"] + registry.names(),
+        key="project_choice",
+    )
+    if choice != "-" and st.sidebar.button("Load", use_container_width=True):
+        record = registry.get(choice)
+        if record:
+            st.session_state.analysis_results = record["analysis"]
+            st.session_state.loaded_project = choice
+            st.rerun()
+else:
+    st.sidebar.caption("No saved projects yet in this session.")
+
+uploaded_project = st.sidebar.file_uploader(
+    "Open a project file", type="json", key="project_import"
+)
+if uploaded_project is not None:
+    try:
+        record = project_store.from_json(uploaded_project.getvalue().decode("utf-8"))
+        registry.save(record)
+        st.session_state.analysis_results = record["analysis"]
+        st.session_state.loaded_project = record["project_name"]
+        st.sidebar.success(f"Opened {record['project_name']}")
+    except ValueError as e:
+        st.sidebar.error(str(e))
+
+st.sidebar.info(
+    "Saved projects live in this app's memory and are lost when the app "
+    "restarts or sleeps. Export a project file to keep it."
+)
+
+st.sidebar.divider()
 st.sidebar.title("⚙️ Settings")
 
 
@@ -175,28 +223,118 @@ with col2:
 # ============================================================================
 
 if soo_file:
-    st.markdown('<p class="section-style">🔄 Step 2: Analyze</p>', unsafe_allow_html=True)
-    
-    if st.button("🚀 Run Analysis", key="analyze_button", use_container_width=True):
-        
-        # Save uploaded files temporarily
+    st.markdown('<p class="section-style">Step 2: Review structure</p>',
+                unsafe_allow_html=True)
+
+    # Read the PDF once and keep it, so the structure preview does not
+    # re-parse on every widget interaction.
+    file_token = f"{soo_file.name}:{soo_file.size}"
+    if st.session_state.get("soo_token") != file_token:
+        with st.spinner("Reading the specification..."):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_pdf = os.path.join(tmpdir, "soo.pdf")
+                with open(tmp_pdf, "wb") as f:
+                    f.write(soo_file.getbuffer())
+                st.session_state.soo_text = BMSAnalyzer.extract_pdf_text(
+                    None, tmp_pdf
+                )
+        st.session_state.soo_token = file_token
+        st.session_state.pop("analysis_results", None)
+
+    soo_text = st.session_state.get("soo_text", "")
+    chunks = build_chunks(soo_text)
+    cov = coverage_report(soo_text, chunks)
+
+    pages = soo_text.count("--- PAGE")
+    chars = len(soo_text)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Pages", pages)
+    c2.metric("Characters read", f"{chars:,}")
+    c3.metric("Sections found", cov["chunk_count"])
+    c4.metric("Coverage", f"{cov['coverage_pct']}%")
+
+    # Two failure modes are worth catching before any money is spent:
+    # a scanned PDF with no text layer, and a layout whose headings were
+    # not recognised, which degrades into unlabelled paragraph splitting.
+    if pages and chars / pages < 200:
+        st.error(
+            f"Only {chars:,} characters across {pages} pages. This PDF is "
+            "probably scanned images rather than text, and cannot be read "
+            "without OCR. Analysing it will produce little or nothing."
+        )
+
+    unlabelled = [c for c in chunks if "part " in c.title.lower()]
+    if chunks and len(unlabelled) > len(chunks) / 2:
+        st.warning(
+            f"{len(unlabelled)} of {len(chunks)} sections could not be matched "
+            "to a heading in the document and were split by length instead. "
+            "Points from those sections will cite a page range but not a "
+            "named system. The specification may use a numbering style this "
+            "tool does not recognise."
+        )
+
+    st.caption(
+        "Deselect anything you do not want analysed. Each section is one "
+        "request, so a shorter list costs less and finishes sooner."
+    )
+
+    labels = [c.label for c in chunks]
+    if st.session_state.get("chunk_token") != file_token:
+        st.session_state.selected_sections = labels
+        st.session_state.chunk_token = file_token
+
+    b1, b2 = st.columns(2)
+    if b1.button("Select all", use_container_width=True):
+        st.session_state.selected_sections = labels
+    if b2.button("Clear all", use_container_width=True):
+        st.session_state.selected_sections = []
+
+    selected = st.multiselect(
+        "Sections to analyse",
+        options=labels,
+        default=st.session_state.get("selected_sections", labels),
+        key="selected_sections",
+        label_visibility="collapsed",
+    )
+
+    st.dataframe(
+        [
+            {
+                "Run": "yes" if c.label in selected else "no",
+                "Section": c.label,
+                "Pages": c.page_range,
+                "Chars": f"{len(c.text):,}",
+            }
+            for c in chunks
+        ],
+        use_container_width=True,
+        height=320,
+    )
+
+    st.markdown('<p class="section-style">Step 3: Analyze</p>',
+                unsafe_allow_html=True)
+
+    if not selected:
+        st.info("Select at least one section to analyse.")
+    else:
+        st.caption(f"{len(selected)} of {len(chunks)} sections selected.")
+
+    if st.button("Run Analysis", key="analyze_button",
+                 use_container_width=True, disabled=not selected):
+
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
                 soo_path = os.path.join(tmpdir, "soo.pdf")
                 with open(soo_path, "wb") as f:
                     f.write(soo_file.getbuffer())
-                
+
                 spec_path = None
                 if spec_file:
                     spec_path = os.path.join(tmpdir, "spec.pdf")
                     with open(spec_path, "wb") as f:
                         f.write(spec_file.getbuffer())
-                
-                # Show progress
-                st.caption(
-                    "The point list runs one pass per SOO section, so a 45-page "
-                    "specification takes several minutes."
-                )
+
                 bar = st.progress(0.0)
                 status = st.empty()
 
@@ -212,18 +350,17 @@ if soo_file:
                     soo_pdf_path=soo_path,
                     spec_pdf_path=spec_path,
                     progress_callback=report,
+                    section_filter=selected,
                 )
                 bar.progress(1.0)
                 status.empty()
-                
+
                 st.session_state.analysis_results = analysis_results
-                st.success("✅ Analysis complete!")
-                
+                st.success("Analysis complete.")
+
             except Exception as e:
-                st.error(f"❌ Error during analysis: {str(e)}")
-                st.write("Debug info:")
+                st.error(f"Error during analysis: {e}")
                 st.write(f"Error type: {type(e).__name__}")
-                st.write(f"Error message: {str(e)}")
                 import traceback
                 st.write(traceback.format_exc())
 
