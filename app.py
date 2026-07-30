@@ -262,7 +262,15 @@ if "analysis_results" in st.session_state:
         points = results.get("point_list", [])
         
         st.subheader(f"Control Point List ({len(points)} points)")
-        
+
+        if results.get("metadata", {}).get("point_list_truncated"):
+            st.warning(
+                f"**This list is incomplete.** The response hit its length limit "
+                f"partway through, so these {len(points)} points are what could be "
+                "recovered - points from the later sections of the SOO are missing. "
+                "Do not treat this as a full takeoff. Verify against the SOO before use."
+            )
+
         if points:
             st.dataframe(points, use_container_width=True, height=400)
             

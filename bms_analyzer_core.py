@@ -20,6 +20,7 @@ class BMSAnalyzer:
         self.soo_text = ""
         self.spec_text = ""
         self.analysis_results = {}
+        self.point_list_truncated = False
     
     # ============================================================================
     # STEP 1: PDF TEXT EXTRACTION
@@ -137,24 +138,54 @@ Rules:
         cleaned = re.sub(r'```json\s*', '', response_text)
         cleaned = re.sub(r'```\s*', '', cleaned)
 
+        stop_reason = getattr(message, "stop_reason", "unknown")
+        points = self._parse_point_array(cleaned, stop_reason)
+        return points
+
+    def _parse_point_array(self, cleaned, stop_reason):
+        """Parse the point-list array, salvaging a truncated response.
+
+        A large SOO can produce more points than fit in one response. When
+        that happens the array is cut off mid-object with no closing bracket,
+        and a strict parse throws away every point that did arrive. Instead,
+        trim back to the last complete object and close the array, so a
+        partial list is still usable. self.point_list_truncated records that
+        this happened so the caller can say so rather than quietly presenting
+        a short list as if it were complete.
+        """
+        self.point_list_truncated = False
+
         start = cleaned.find('[')
-        end = cleaned.rfind(']') + 1
-        if start < 0 or end <= start:
+        if start < 0:
             raise ValueError(
-                "Point list: no JSON array found in response. "
-                "First 500 chars:\n%s" % cleaned[:500]
+                "Point list: no JSON array in response (stop_reason=%s). "
+                "First 500 chars:\n%s" % (stop_reason, cleaned[:500])
             )
 
-        try:
-            return json.loads(cleaned[start:end])
-        except json.JSONDecodeError as e:
-            # Most likely cause: response hit max_tokens and the array was
-            # cut off mid-object. Say so rather than returning an empty list.
-            raise ValueError(
-                "Point list: JSON was malformed (%s). This usually means the "
-                "response was truncated - stop_reason was '%s'. Last 300 chars:\n%s"
-                % (e, getattr(message, "stop_reason", "unknown"), cleaned[-300:])
-            )
+        end = cleaned.rfind(']')
+        if end > start:
+            try:
+                return json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError:
+                pass  # fall through to salvage
+
+        # No closing bracket, or the array was malformed: salvage.
+        fragment = cleaned[start:]
+        while True:
+            last_obj = fragment.rfind('}')
+            if last_obj == -1:
+                raise ValueError(
+                    "Point list: response was truncated before any complete "
+                    "entry (stop_reason=%s). Nothing could be recovered."
+                    % stop_reason
+                )
+            try:
+                parsed = json.loads(fragment[:last_obj + 1] + ']')
+                self.point_list_truncated = True
+                return parsed
+            except json.JSONDecodeError:
+                # That object was itself incomplete; drop it and retry.
+                fragment = fragment[:last_obj]
     
     # ============================================================================
     # STEP 4: LABOR ESTIMATION (Claude AI)
@@ -338,6 +369,7 @@ Return ONLY valid JSON:
             "metadata": {
                 "soo_pages": self.soo_text.count("--- PAGE"),
                 "soo_characters": len(self.soo_text),
+                "point_list_truncated": self.point_list_truncated,
                 "total_points_extracted": len(points),
                 "total_i_o_count": sum(int(p.get('Qty', 1) or 1) for p in points)
             }
