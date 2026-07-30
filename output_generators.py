@@ -288,28 +288,50 @@ class OutputGenerator:
             ws_points = wb.create_sheet("Points List")
             
             # Headers
-            headers = ["Panel", "Equipment", "Point_Name", "Control Device", "AI", "BI", "AO", "BO", "Qty", "Description"]
-            for col_idx, header in enumerate(headers, 1):
+            # Field order matches the 11-column working format, with the
+            # audit-trail columns appended so every row can be traced back
+            # to the section and wording it came from.
+            headers = [
+                ("Panel", "Panel"),
+                ("Equipment", "Equipment"),
+                ("Point_Name", "Point_Name"),
+                ("Control Device", "Control Device"),
+                ("AI", "AI"), ("BI", "BI"), ("AO", "AO"), ("BO", "BO"),
+                ("Qty", "Qty"),
+                ("Description", "Description"),
+                ("Confidence", "Confidence"),
+                ("Source_Section", "Source Section"),
+                ("Source_Pages", "SOO Pages"),
+                ("Evidence", "Evidence (verbatim)"),
+                ("Repeats_In_Sections", "Repeats"),
+            ]
+            for col_idx, (_, label) in enumerate(headers, 1):
                 cell = ws_points.cell(1, col_idx)
-                cell.value = header
+                cell.value = label
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
-            
-            # Data rows
+
             points = analysis_results.get("point_list", [])
+            conf_fill = {
+                "high": PatternFill(start_color="E6F4EA", end_color="E6F4EA", fill_type="solid"),
+                "medium": PatternFill(start_color="FFF7E0", end_color="FFF7E0", fill_type="solid"),
+                "low": PatternFill(start_color="FCE8E6", end_color="FCE8E6", fill_type="solid"),
+            }
+
             for row_idx, point in enumerate(points, 2):
-                ws_points.cell(row_idx, 1).value = point.get("Panel", "")
-                ws_points.cell(row_idx, 2).value = point.get("Equipment", "")
-                ws_points.cell(row_idx, 3).value = point.get("Point_Name", "")
-                ws_points.cell(row_idx, 4).value = point.get("Control Device", "")
-                ws_points.cell(row_idx, 5).value = point.get("AI", "")
-                ws_points.cell(row_idx, 6).value = point.get("BI", "")
-                ws_points.cell(row_idx, 7).value = point.get("AO", "")
-                ws_points.cell(row_idx, 8).value = point.get("BO", "")
-                ws_points.cell(row_idx, 9).value = point.get("Qty", 1)
-                ws_points.cell(row_idx, 10).value = point.get("Description", "")
+                for col_idx, (key, _) in enumerate(headers, 1):
+                    ws_points.cell(row_idx, col_idx).value = point.get(key, "")
+                # Shade the confidence cell so low-confidence rows are
+                # obvious when the sheet is reviewed by hand.
+                fill = conf_fill.get(str(point.get("Confidence", "")).lower())
+                if fill:
+                    ws_points.cell(row_idx, 11).fill = fill
+
+            ws_points.freeze_panes = "A2"
             
             # Adjust column widths
+            for col, width in (("K", 12), ("L", 42), ("M", 11), ("N", 46), ("O", 9)):
+                ws_points.column_dimensions[col].width = width
             ws_points.column_dimensions['A'].width = 12
             ws_points.column_dimensions['B'].width = 12
             ws_points.column_dimensions['C'].width = 25

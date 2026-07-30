@@ -193,17 +193,28 @@ if soo_file:
                         f.write(spec_file.getbuffer())
                 
                 # Show progress
-                with st.spinner("Analyzing the full SOO - this runs four passes over the document..."):
-                    st.write(
-                        "Expect 2-5 minutes for a 50-page SOO. The full document is "
-                        "sent on every pass, so longer documents take proportionally longer."
-                    )
-                    
-                    analyzer = BMSAnalyzer(api_key)
-                    analysis_results = analyzer.run_full_analysis(
-                        soo_pdf_path=soo_path,
-                        spec_pdf_path=spec_path
-                    )
+                st.caption(
+                    "The point list runs one pass per SOO section, so a 45-page "
+                    "specification takes several minutes."
+                )
+                bar = st.progress(0.0)
+                status = st.empty()
+
+                def report(done, total, label):
+                    if total:
+                        bar.progress(min(done / total, 1.0))
+                        status.write(f"Section {done + 1} of {total}: {label}")
+                    else:
+                        status.write(label)
+
+                analyzer = BMSAnalyzer(api_key)
+                analysis_results = analyzer.run_full_analysis(
+                    soo_pdf_path=soo_path,
+                    spec_pdf_path=spec_path,
+                    progress_callback=report,
+                )
+                bar.progress(1.0)
+                status.empty()
                 
                 st.session_state.analysis_results = analysis_results
                 st.success("✅ Analysis complete!")
@@ -227,12 +238,13 @@ if "analysis_results" in st.session_state:
     st.markdown('<p class="section-style">📊 Step 3: Analysis Results</p>', unsafe_allow_html=True)
     
     # ===== TABS FOR RESULTS =====
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📋 Scope",
-        "📍 Points",
-        "💼 Labor",
-        "⚠️ RFIs",
-        "📈 Metadata"
+    tab1, tab2, tab6, tab3, tab4, tab5 = st.tabs([
+        "Scope",
+        "Points",
+        "Coverage",
+        "Labor",
+        "RFIs",
+        "Metadata",
     ])
     
     # --- TAB 1: SCOPE ---
@@ -265,15 +277,31 @@ if "analysis_results" in st.session_state:
 
         if results.get("metadata", {}).get("point_list_truncated"):
             st.warning(
-                f"**This list is incomplete.** The response hit its length limit "
-                f"partway through, so these {len(points)} points are what could be "
-                "recovered - points from the later sections of the SOO are missing. "
-                "Do not treat this as a full takeoff. Verify against the SOO before use."
+                "**At least one section hit its response limit** and was "
+                "salvaged partially. Check the Coverage tab to see which, and "
+                "treat that section's points as incomplete."
             )
 
         if points:
-            st.dataframe(points, use_container_width=True, height=400)
-            
+            conf_counts = results.get("metadata", {}).get("confidence_counts", {})
+            if conf_counts:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("High confidence", conf_counts.get("high", 0),
+                          help="Tag and evidence both found verbatim in the source section")
+                c2.metric("Medium", conf_counts.get("medium", 0),
+                          help="Tag verbatim, but the evidence phrase could not be matched")
+                c3.metric("Low", conf_counts.get("low", 0),
+                          help="Tag not found in source, ambiguous I/O type, or repeated across sections")
+
+            levels = st.multiselect(
+                "Show confidence levels",
+                ["high", "medium", "low"],
+                default=["high", "medium", "low"],
+            )
+            shown = [p for p in points if p.get("Confidence", "low") in levels]
+            st.caption(f"Showing {len(shown)} of {len(points)} points")
+            st.dataframe(shown, use_container_width=True, height=400)
+
             col1, col2, col3, col4 = st.columns(4)
             ai_count = sum(1 for p in points if p.get("AI"))
             bi_count = sum(1 for p in points if p.get("BI"))
@@ -349,6 +377,62 @@ if "analysis_results" in st.session_state:
         if not rfis.get("rfis") and not rfis.get("exclusions"):
             st.info("No RFIs or exclusions identified")
     
+    # --- TAB 6: COVERAGE ---
+    with tab6:
+        meta = results.get("metadata", {})
+        cov = meta.get("coverage", {})
+        sections = meta.get("sections", [])
+        failed = meta.get("sections_failed", [])
+
+        st.subheader("What was actually analysed")
+        st.caption(
+            "Every point traces back to one section below. Anything not listed "
+            "here was not read, so gaps are visible rather than assumed."
+        )
+
+        if cov:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Sections analysed", cov.get("chunk_count", 0))
+            c2.metric("Document covered", f"{cov.get('coverage_pct', 0)}%")
+            c3.metric("Largest section", f"{cov.get('largest_chunk', 0):,} ch")
+            st.caption(
+                "Coverage below 100% is expected: administrative sections such as "
+                "Related Documents, Summary and Definitions contain no control "
+                "points and are skipped deliberately."
+            )
+
+        if failed:
+            st.error(
+                f"{len(failed)} section(s) failed and contributed no points. "
+                "The totals below are incomplete until these are re-run."
+            )
+            for f in failed:
+                st.write(f"**{f['section']}** (p{f['pages']}) - {f['detail']}")
+
+        if sections:
+            st.dataframe(
+                [
+                    {
+                        "Section": r["section"],
+                        "Pages": r["pages"],
+                        "Chars": f"{r['chars']:,}",
+                        "Points": r["points"],
+                        "Status": r["status"],
+                    }
+                    for r in sections
+                ],
+                use_container_width=True,
+                height=420,
+            )
+
+            empty = [r for r in sections if r["status"] == "ok" and r["points"] == 0]
+            if empty:
+                st.info(
+                    f"{len(empty)} section(s) returned zero points. That is often "
+                    "correct for narrative sections, but worth a glance: "
+                    + ", ".join(r["section"][:40] for r in empty[:5])
+                )
+
     # --- TAB 5: METADATA ---
     with tab5:
         metadata = results.get("metadata", {})

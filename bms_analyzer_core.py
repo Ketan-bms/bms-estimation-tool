@@ -21,6 +21,9 @@ class BMSAnalyzer:
         self.spec_text = ""
         self.analysis_results = {}
         self.point_list_truncated = False
+        self.section_results_truncated = False
+        self.section_results = []
+        self.coverage = {}
     
     # ============================================================================
     # STEP 1: PDF TEXT EXTRACTION
@@ -82,65 +85,184 @@ This is the complete SOO. Cover every system described anywhere in it."""
     # STEP 3: POINT LIST GENERATION (Claude AI)
     # ============================================================================
     
-    def generate_point_list(self, soo_text):
-        """Claude generates point list from SOO"""
-        
-        prompt = f"""You are a BMS point list expert. Extract all control points from this SOO.
+    def generate_point_list(self, soo_text, progress_callback=None):
+        """Extract control points section by section.
 
-Generate a point list in JSON array format with these columns:
-- Panel: Control panel name (e.g., "pnl-MER-1")
-- Equipment: Equipment tag (e.g., "ASHP-1", "AHU-3")
-- Point_Name: Descriptive point name
-- AI: 1 if Analog Input, blank otherwise
-- BI: 1 if Binary Input (Digital Input), blank otherwise  
-- AO: 1 if Analog Output, blank otherwise
-- BO: 1 if Binary Output (Digital Output), blank otherwise
-- Qty: Quantity of this point (usually 1)
-- Description: What this point does
+        One call per SOO section rather than one call for the whole document.
+        Each response then has to enumerate only the points for a single
+        system, which keeps it well inside its length limit, and every point
+        carries the section and pages it came from so it can be checked
+        against the source.
 
-Return ONLY valid JSON array (no markdown):
+        progress_callback(done, total, label) is invoked before each section
+        so the UI can report progress on a run that takes several minutes.
+        """
+        from soo_chunker import build_chunks, coverage_report
+
+        chunks = build_chunks(soo_text)
+        self.coverage = coverage_report(soo_text, chunks)
+        self.section_results = []
+
+        all_points = []
+        for i, chunk in enumerate(chunks, 1):
+            if progress_callback:
+                progress_callback(i - 1, len(chunks), chunk.label)
+
+            try:
+                points = self._extract_points_from_section(chunk)
+                status, detail = "ok", ""
+            except Exception as e:
+                # One bad section must not discard the other sixteen. The
+                # failure is recorded and reported, never swallowed.
+                points, status, detail = [], "failed", str(e)[:300]
+
+            for pt in points:
+                pt["Source_Section"] = chunk.label
+                pt["Source_Pages"] = chunk.page_range
+            all_points.extend(points)
+
+            self.section_results.append({
+                "section": chunk.label,
+                "pages": chunk.page_range,
+                "chars": len(chunk.text),
+                "points": len(points),
+                "status": status,
+                "detail": detail,
+            })
+
+        if progress_callback:
+            progress_callback(len(chunks), len(chunks), "merging")
+
+        merged = self._merge_points(all_points)
+        self._assign_confidence(merged, chunks)
+        return merged
+
+    def _extract_points_from_section(self, chunk):
+        """Run one extraction call scoped to a single SOO section."""
+        prompt = f"""You are a BMS point list expert reading ONE section of a
+Sequence of Operations. Extract every control point described in this section.
+
+SECTION: {chunk.label}
+SOURCE PAGES: {chunk.page_range}
+
+Return ONLY a JSON array, no prose and no code fences:
 
 [
   {{
     "Panel": "pnl-MER-1",
     "Equipment": "ASHP-1",
     "Point_Name": "Compressor Status",
-    "AI": "",
-    "BI": "1",
-    "AO": "",
-    "BO": "",
+    "AI": "", "BI": "1", "AO": "", "BO": "",
     "Qty": "1",
-    "Description": "Status indication from compressor"
+    "Description": "Status indication from compressor",
+    "Evidence": "short verbatim phrase from the text below that this point came from"
   }}
 ]
 
-Extract from SOO:
-{soo_text}
-
 Rules:
-- Temperature/pressure/humidity sensors = AI
-- On/off status, alarms = BI
-- Valve commands, damper commands = AO
-- Relay outputs, pump start = BO
-- Qty = count of same point type (e.g., 3 fans = 3x supply fan start)
-- Return ONLY the JSON array, nothing else"""
-        
-        message = self._call_claude(prompt, max_tokens=32000)
-        
-        response_text = self._extract_text(message).strip()
+- Temperature, pressure, humidity, flow and position feedback = AI
+- On/off status, alarms, proof, and command feedback = BI
+- Modulating valve, damper and speed commands = AO
+- Start/stop and enable commands = BO
+- Set exactly one of AI/BI/AO/BO to "1"; leave the other three as ""
+- Qty is the number of identical points; if the text says a quantity of
+  equipment (for example "four pumps"), give the per-equipment point once
+  and set Qty to that number
+- Use equipment tags exactly as written in the text. Do not invent tags.
+- Evidence must be copied verbatim from the section text, under 15 words
+- Extract ONLY from the section text below. Do not add points from memory
+  or from other systems you would expect to see.
+- If this section describes no control points, return []
 
-        if not response_text:
-            raise ValueError(
-                "Point list: model returned no text. "
-                "Response blocks: %s" % [getattr(b, "type", "?") for b in message.content]
-            )
+SECTION TEXT:
+{chunk.text}"""
 
-        cleaned = re.sub(r'```json\s*', '', response_text)
+        message = self._call_claude(prompt, max_tokens=8000)
+        text = self._extract_text(message).strip()
+        if not text:
+            raise ValueError("model returned no text")
+
+        cleaned = re.sub(r'```json\s*', '', text)
         cleaned = re.sub(r'```\s*', '', cleaned)
-
         stop_reason = getattr(message, "stop_reason", "unknown")
+
         points = self._parse_point_array(cleaned, stop_reason)
+        if self.point_list_truncated:
+            # Sized to avoid this, so if it happens the section is unusually
+            # dense and the caller needs to know rather than assume.
+            self.section_results_truncated = True
         return points
+
+    def _merge_points(self, points):
+        """Collapse exact repeats inside a section; keep cross-section repeats.
+
+        The same point appearing twice in one section is a duplication in the
+        response. The same point appearing in two sections is usually a real
+        second instance (a typical sequence applied to two systems), so those
+        are kept and flagged rather than deleted - silently dropping them
+        would understate the count.
+        """
+        seen_in_section = {}
+        merged = []
+
+        for pt in points:
+            key = (
+                str(pt.get("Source_Section", "")).strip().upper(),
+                str(pt.get("Equipment", "")).strip().upper(),
+                str(pt.get("Point_Name", "")).strip().upper(),
+            )
+            if key in seen_in_section:
+                continue
+            seen_in_section[key] = True
+            merged.append(pt)
+
+        # Flag the same equipment+point occurring in more than one section.
+        counts = {}
+        for pt in merged:
+            k = (str(pt.get("Equipment", "")).strip().upper(),
+                 str(pt.get("Point_Name", "")).strip().upper())
+            counts[k] = counts.get(k, 0) + 1
+
+        for pt in merged:
+            k = (str(pt.get("Equipment", "")).strip().upper(),
+                 str(pt.get("Point_Name", "")).strip().upper())
+            pt["Repeats_In_Sections"] = counts[k] if counts[k] > 1 else ""
+
+        return merged
+
+    def _assign_confidence(self, points, chunks):
+        """Grade each point by how directly the source text supports it.
+
+        high   - equipment tag appears verbatim in its source section, the
+                 evidence phrase is present in that text, and exactly one
+                 I/O type is set
+        medium - tag is verbatim but the classification or evidence could
+                 not be corroborated
+        low    - tag does not appear in the source text, or the point spans
+                 multiple sections, or no single I/O type was assigned
+
+        This mirrors the device-level rule of grading on verbatim support
+        rather than plausibility, applied here at point level.
+        """
+        by_label = {c.label: c.text for c in chunks}
+
+        for pt in points:
+            source_text = by_label.get(pt.get("Source_Section", ""), "")
+            tag = str(pt.get("Equipment", "")).strip()
+            evidence = str(pt.get("Evidence", "")).strip()
+
+            io_flags = [pt.get(k) for k in ("AI", "BI", "AO", "BO")]
+            single_io = sum(1 for f in io_flags if str(f).strip()) == 1
+
+            tag_verbatim = bool(tag) and tag.upper() in source_text.upper()
+            evidence_found = bool(evidence) and evidence.lower() in source_text.lower()
+
+            if not tag_verbatim or not single_io or pt.get("Repeats_In_Sections"):
+                pt["Confidence"] = "low"
+            elif evidence_found:
+                pt["Confidence"] = "high"
+            else:
+                pt["Confidence"] = "medium"
 
     def _parse_point_array(self, cleaned, stop_reason):
         """Parse the point-list array, salvaging a truncated response.
@@ -340,24 +462,42 @@ Return ONLY valid JSON:
     # MAIN: RUN COMPLETE ANALYSIS
     # ============================================================================
     
-    def run_full_analysis(self, soo_pdf_path, spec_pdf_path=None):
-        """Run complete analysis pipeline"""
-        
-        print("🔄 Step 1: Extracting text from PDFs...")
+    @staticmethod
+    def _num_qty(point):
+        """Qty as an int, tolerating strings and blanks."""
+        raw = point.get("Qty", 1)
+        try:
+            return int(float(str(raw).strip() or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def run_full_analysis(self, soo_pdf_path, spec_pdf_path=None,
+                          progress_callback=None):
+        """Run the full pipeline.
+
+        progress_callback(done, total, label) is forwarded to the point-list
+        stage, which is the long one: it makes one call per SOO section.
+        """
+        def step(label):
+            if progress_callback:
+                progress_callback(0, 0, label)
+
+        step("Reading PDF")
         self.soo_text = self.extract_pdf_text(soo_pdf_path)
         if spec_pdf_path:
             self.spec_text = self.extract_pdf_text(spec_pdf_path)
-        
-        print("🔄 Step 2: Analyzing scope overview...")
+
+        step("Analysing scope")
         scope = self.analyze_scope_overview(self.soo_text)
-        
-        print("🔄 Step 3: Generating point list...")
-        points = self.generate_point_list(self.soo_text)
-        
-        print("🔄 Step 4: Estimating labor hours...")
+
+        points = self.generate_point_list(
+            self.soo_text, progress_callback=progress_callback
+        )
+
+        step("Estimating labour")
         labor = self.estimate_labor_hours(self.soo_text, points)
-        
-        print("🔄 Step 5: Detecting RFIs & exclusions...")
+
+        step("Detecting RFIs")
         rfis = self.detect_rfis_and_exclusions(self.soo_text)
         
         # Compile all results
@@ -369,9 +509,17 @@ Return ONLY valid JSON:
             "metadata": {
                 "soo_pages": self.soo_text.count("--- PAGE"),
                 "soo_characters": len(self.soo_text),
-                "point_list_truncated": self.point_list_truncated,
+                "point_list_truncated": self.section_results_truncated,
                 "total_points_extracted": len(points),
-                "total_i_o_count": sum(int(p.get('Qty', 1) or 1) for p in points)
+                "total_i_o_count": sum(self._num_qty(p) for p in points),
+                "coverage": self.coverage,
+                "sections": self.section_results,
+                "sections_failed": [r for r in self.section_results
+                                    if r["status"] != "ok"],
+                "confidence_counts": {
+                    level: sum(1 for p in points if p.get("Confidence") == level)
+                    for level in ("high", "medium", "low")
+                },
             }
         }
         
