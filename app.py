@@ -97,6 +97,10 @@ api_key = st.sidebar.text_input(
     help="Get from https://console.anthropic.com/keys"
 )
 
+# Strip whitespace/newlines. Pasted keys often carry a trailing space,
+# which makes an illegal HTTP header and fails as a generic "Connection error".
+api_key = api_key.strip() if api_key else ""
+
 if not api_key:
     st.sidebar.warning("⚠️ Please enter your Anthropic API key to continue")
     st.info("**How to get API key:**\n1. Go to https://console.anthropic.com/keys\n2. Sign up or login\n3. Create new API key\n4. Paste it above")

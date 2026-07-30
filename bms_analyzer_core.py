@@ -14,7 +14,9 @@ class BMSAnalyzer:
     """Main analyzer class - orchestrates all analysis"""
     
     def __init__(self, api_key):
-        self.client = Anthropic(api_key=api_key)
+        # Defensive strip: a trailing space/newline on a pasted key produces an
+        # illegal HTTP header and surfaces as an opaque APIConnectionError.
+        self.client = Anthropic(api_key=(api_key or "").strip())
         self.soo_text = ""
         self.spec_text = ""
         self.analysis_results = {}
