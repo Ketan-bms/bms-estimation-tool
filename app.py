@@ -172,8 +172,11 @@ if soo_file:
                         f.write(spec_file.getbuffer())
                 
                 # Show progress
-                with st.spinner("🔄 Extracting text from SOO PDF..."):
-                    st.write("Please wait, this may take 30-60 seconds...")
+                with st.spinner("Analyzing the full SOO - this runs four passes over the document..."):
+                    st.write(
+                        "Expect 2-5 minutes for a 50-page SOO. The full document is "
+                        "sent on every pass, so longer documents take proportionally longer."
+                    )
                     
                     analyzer = BMSAnalyzer(api_key)
                     analysis_results = analyzer.run_full_analysis(

@@ -73,11 +73,7 @@ SOO TEXT (first 5000 chars - summary):
 
 This is the complete SOO. Cover every system described anywhere in it."""
         
-        message = self.client.messages.create(
-            model="claude-opus-5",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        message = self._call_claude(prompt, max_tokens=4000)
         
         return self._parse_json_response(self._extract_text(message))
     
@@ -128,11 +124,7 @@ Rules:
 - Qty = count of same point type (e.g., 3 fans = 3x supply fan start)
 - Return ONLY the JSON array, nothing else"""
         
-        message = self.client.messages.create(
-            model="claude-opus-5",
-            max_tokens=32000,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        message = self._call_claude(prompt, max_tokens=32000)
         
         response_text = self._extract_text(message).strip()
 
@@ -210,11 +202,7 @@ Consider:
 - Integration requirements
 - Risk factors"""
         
-        message = self.client.messages.create(
-            model="claude-opus-5",
-            max_tokens=3000,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        message = self._call_claude(prompt, max_tokens=3000)
         
         return self._parse_json_response(self._extract_text(message))
     
@@ -251,11 +239,7 @@ Return ONLY valid JSON:
   ]
 }}"""
         
-        message = self.client.messages.create(
-            model="claude-opus-5",
-            max_tokens=3000,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        message = self._call_claude(prompt, max_tokens=3000)
         
         return self._parse_json_response(self._extract_text(message))
     
@@ -263,6 +247,25 @@ Return ONLY valid JSON:
     # UTILITY: JSON PARSER
     # ============================================================================
     
+    MODEL = "claude-opus-5"
+
+    def _call_claude(self, prompt, max_tokens):
+        """Send one prompt and return the completed Message.
+
+        Uses the streaming API. The SDK refuses non-streaming requests whose
+        max_tokens is large enough that they could exceed a 10 minute wall
+        clock, which the point-list call does. Streaming also avoids proxy
+        timeouts on long generations. get_final_message() reassembles the
+        stream into the same Message object a create() call would return,
+        so .content and .stop_reason behave identically downstream.
+        """
+        with self.client.messages.stream(
+            model=self.MODEL,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            return stream.get_final_message()
+
     def _extract_text(self, message):
         """Pull the text out of a Claude response.
 
