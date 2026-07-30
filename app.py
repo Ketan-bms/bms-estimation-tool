@@ -221,11 +221,11 @@ with col2:
 # ============================================================================
 
 if soo_file:
-    st.markdown('<p class="section-style">Step 2: Review structure</p>',
+    st.markdown('<p class="section-style">Step 2: Analyze</p>',
                 unsafe_allow_html=True)
 
-    # Read the PDF once and keep it, so the structure preview does not
-    # re-parse on every widget interaction.
+    # Read the PDF once and hold it, so the summary does not re-parse on
+    # every widget interaction.
     file_token = f"{soo_file.name}:{soo_file.size}"
     if st.session_state.get("soo_token") != file_token:
         with st.spinner("Reading the specification..."):
@@ -236,10 +236,12 @@ if soo_file:
                 st.session_state.soo_text = BMSAnalyzer.extract_pdf_text(tmp_pdf)
         st.session_state.soo_token = file_token
         st.session_state.pop("analysis_results", None)
+        st.session_state.pop("section_override", None)
 
     soo_text = st.session_state.get("soo_text", "")
     chunks = build_chunks(soo_text)
     cov = coverage_report(soo_text, chunks)
+    labels = [c.label for c in chunks]
 
     pages = soo_text.count("--- PAGE")
     chars = len(soo_text)
@@ -247,12 +249,12 @@ if soo_file:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Pages", pages)
     c2.metric("Characters read", f"{chars:,}")
-    c3.metric("Sections found", cov["chunk_count"])
+    c3.metric("Systems found", cov["chunk_count"])
     c4.metric("Coverage", f"{cov['coverage_pct']}%")
 
-    # Two failure modes are worth catching before any money is spent:
-    # a scanned PDF with no text layer, and a layout whose headings were
-    # not recognised, which degrades into unlabelled paragraph splitting.
+    # Surfaced without asking the user to act: a scanned PDF cannot be read
+    # at all, and unrecognised headings mean weaker provenance. Both change
+    # how far the results should be trusted.
     if pages and chars / pages < 200:
         st.error(
             f"Only {chars:,} characters across {pages} pages. This PDF is "
@@ -264,57 +266,53 @@ if soo_file:
     if chunks and len(unlabelled) > len(chunks) / 2:
         st.warning(
             f"{len(unlabelled)} of {len(chunks)} sections could not be matched "
-            "to a heading in the document and were split by length instead. "
-            "Points from those sections will cite a page range but not a "
-            "named system. The specification may use a numbering style this "
-            "tool does not recognise."
+            "to a heading and were split by length instead. Their points will "
+            "cite a page range but not a named system."
         )
 
-    st.caption(
-        "Deselect anything you do not want analysed. Each section is one "
-        "request, so a shorter list costs less and finishes sooner."
-    )
+    # The whole document is analysed by default. Administrative sections
+    # (Related Documents, Summary, Definitions) are dropped automatically
+    # because they contain no control points.
+    override = st.session_state.get("section_override")
+    selected = override if override is not None else labels
 
-    labels = [c.label for c in chunks]
-    if st.session_state.get("chunk_token") != file_token:
-        st.session_state.selected_sections = labels
-        st.session_state.chunk_token = file_token
+    with st.expander(
+        f"Systems detected ({len(chunks)})"
+        + ("" if override is None else f" - limited to {len(selected)}")
+    ):
+        st.dataframe(
+            [
+                {
+                    "System": c.label,
+                    "Pages": c.page_range,
+                    "Size": f"{len(c.text):,} ch",
+                }
+                for c in chunks
+            ],
+            use_container_width=True,
+            height=300,
+        )
 
-    b1, b2 = st.columns(2)
-    if b1.button("Select all", use_container_width=True):
-        st.session_state.selected_sections = labels
-    if b2.button("Clear all", use_container_width=True):
-        st.session_state.selected_sections = []
-
-    selected = st.multiselect(
-        "Sections to analyse",
-        options=labels,
-        default=st.session_state.get("selected_sections", labels),
-        key="selected_sections",
-        label_visibility="collapsed",
-    )
-
-    st.dataframe(
-        [
-            {
-                "Run": "yes" if c.label in selected else "no",
-                "Section": c.label,
-                "Pages": c.page_range,
-                "Chars": f"{len(c.text):,}",
-            }
-            for c in chunks
-        ],
-        use_container_width=True,
-        height=320,
-    )
-
-    st.markdown('<p class="section-style">Step 3: Analyze</p>',
-                unsafe_allow_html=True)
+        limit = st.checkbox(
+            "Analyse only part of this document",
+            value=override is not None,
+            help="Useful for a quick check on a long specification before "
+                 "running the whole thing.",
+        )
+        if limit:
+            picked = st.multiselect(
+                "Systems to analyse",
+                options=labels,
+                default=selected,
+            )
+            st.session_state.section_override = picked
+            selected = picked
+        else:
+            st.session_state.section_override = None
+            selected = labels
 
     if not selected:
-        st.info("Select at least one section to analyse.")
-    else:
-        st.caption(f"{len(selected)} of {len(chunks)} sections selected.")
+        st.info("Select at least one system, or untick the limit to analyse all.")
 
     if st.button("Run Analysis", key="analyze_button",
                  use_container_width=True, disabled=not selected):
