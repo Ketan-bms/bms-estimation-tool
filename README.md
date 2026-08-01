@@ -165,7 +165,7 @@ bms-estimation-tool/
 ## 📊 Example Output
 
 ### **Input:**
-175 Park Avenue SOO (50+ pages)
+Estimation project SOO (50+ pages)
 
 ### **Instant Output:**
 - **Scope:** 87 I/O points, 5 major systems (ASHP, chiller, AHU, DOAS, ERU)
