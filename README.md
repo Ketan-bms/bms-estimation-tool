@@ -92,17 +92,23 @@ User Downloads All
 
 ---
 
-## 🧠 AI Technology
+##🧠 AI Technology
+Uses Claude AI (Anthropic) for document understanding
 
-Uses **Claude AI** (Anthropic's advanced language model) to:
+Model Evolution:
+📊 V1: Claude Opus
+  - Result: 98% accuracy on complex SOO documents
+  - Trade-off: High token usage (production cost concern)
+  - Learning: Works perfectly, now optimizing for scale
 
-- **Understand complex SOO documents** - Reads 50+ page sequences like a controls expert
-- **Extract control logic** - Identifies all I/O points, sequences, integrations
-- **Generate point lists** - Creates structured data (Panel, Equipment, Point Name, AI/BI/AO/BO, Qty)
-- **Estimate labor** - Calculates hours by role based on complexity
-- **Detect RFIs** - Finds ambiguities and questions needing clarification
+🚀 V2: Claude Sonnet (In Progress)
+  - Goal: Maintain 98%+ accuracy with 40-50% cost reduction
+  - Status: Benchmarking on real SOO documents
+  - Timeline: Q3 2026
 
-**No OCR. No templates. Real AI understanding.** 🧠
+Product Thinking:
+This mirrors how good products work — ship MVP with best solution,
+measure real-world impact, then optimize based on actual constraints.
 
 ---
 
