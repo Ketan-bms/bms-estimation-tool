@@ -97,6 +97,17 @@ Being direct about this rather than letting it surface later:
 
 ---
 
+## Next steps
+
+Ranked by what's actually actionable, not by how important each one sounds:
+
+1. **Produce a real accuracy number.** Run a real SOO through the app once, upload a matching engineer point matrix in the Accuracy tab, click compare. This is the single highest-value thing left to do — it turns "coverage 91.7%" into "recall X%, verified against a real point list" — and it costs nothing beyond the extraction run itself. Nothing else on this list matters as much as this one.
+2. **Test the controls-spec cross-check against a real spec document**, once one is available. Currently only verified against synthetic text with a known planted gap.
+3. **Extend heading detection when it meets a document it can't parse**, rather than pre-emptively. It already generalizes across two real, differently-structured SOO formats; the next improvement comes from the next format that breaks it, not from guessing in advance.
+4. **Multi-instance multiplier** (a "typical" sequence installed on 4 identical pumps producing 4x the points, not 1x) is out of scope for now — it requires ingesting MEP equipment schedules, a document type this tool doesn't read at all today. Real feature work, not a quick fix.
+
+---
+
 ## Tech stack
 
 Python · Streamlit · Anthropic API (Claude) · PyMuPDF (PDF extraction) · python-docx · openpyxl
