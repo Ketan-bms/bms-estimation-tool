@@ -5,6 +5,7 @@ Parses SOO → Generates scope, point list, labor estimate
 """
 
 import fitz  # PyMuPDF
+import hashlib
 import json
 import re
 from anthropic import Anthropic
@@ -13,7 +14,8 @@ from anthropic import Anthropic
 class BMSAnalyzer:
     """Main analyzer class - orchestrates all analysis"""
     
-    def __init__(self, api_key):
+    def __init__(self, api_key, cache=None, extraction_model=None,
+                 overview_model=None):
         # Defensive strip: a trailing space/newline on a pasted key produces an
         # illegal HTTP header and surfaces as an opaque APIConnectionError.
         self.client = Anthropic(api_key=(api_key or "").strip())
@@ -24,6 +26,23 @@ class BMSAnalyzer:
         self.section_results_truncated = False
         self.section_results = []
         self.coverage = {}
+        # Maps a hash of (section text + model + prompt version) to the
+        # points already extracted from it. Re-running an unchanged document
+        # then costs nothing, which matters because iterating on the rest of
+        # the pipeline would otherwise re-pay for extraction every time.
+        self.cache = {} if cache is None else cache
+        self.cache_hits = 0
+        # Real usage as reported by the API, tracked per model since
+        # extraction and overview calls are billed at different rates.
+        # Populated on every non-cached call.
+        self.usage = {
+            "extraction": {"input_tokens": 0, "output_tokens": 0, "requests": 0},
+            "overview": {"input_tokens": 0, "output_tokens": 0, "requests": 0},
+        }
+        if extraction_model:
+            self.EXTRACTION_MODEL = extraction_model
+        if overview_model:
+            self.OVERVIEW_MODEL = overview_model
     
     # ============================================================================
     # STEP 1: PDF TEXT EXTRACTION
@@ -43,7 +62,12 @@ class BMSAnalyzer:
                 page_text = page.get_text()
                 text += f"\n--- PAGE {page_num} ---\n{page_text}"
             doc.close()
-            return text
+
+            # Drop repeated page headers and footers. They are sent with
+            # every chunk and paid for every time, and contain no sequence
+            # content.
+            from soo_chunker import strip_page_furniture
+            return strip_page_furniture(text)
         except Exception as e:
             return f"ERROR extracting PDF: {str(e)}"
     
@@ -51,45 +75,132 @@ class BMSAnalyzer:
     # STEP 2: SCOPE ANALYSIS (Claude AI)
     # ============================================================================
     
-    def analyze_scope_overview(self, soo_text):
-        """Claude reads SOO and generates scope overview"""
-        
-        prompt = f"""You are a BMS controls expert. Analyze this Sequence of Operations document.
+    def analyze_document(self, soo_text, point_list):
+        """Scope, labour and RFI analysis in one call.
 
-Extract and provide:
-1. Project Overview: What building/systems are being controlled?
-2. Systems Included: List all HVAC/BMS systems in scope (AHU, DOAS, ASHP, chillers, ERU, VAV, etc)
-3. Total I/O Points Estimate: Count approximate I/O points from the SOO
-4. Integration Requirements: BACnet, hardwired, fire interface, etc.
-5. Scope Status: Clearly included vs needs clarification
+        These were originally three separate calls, each sending the entire
+        document. On a large SOO that means the full text goes to the
+        priciest model three times over - for 175 Park's ~335,000 characters
+        that is roughly 250,000 input tokens for this stage alone, often
+        exceeding the cost of every per-section extraction call combined.
+        None of the three tasks needs its own read: scope, labour and RFI
+        judgement can all be formed from one pass, so this sends the
+        document once and asks for all three JSON blocks together.
+        """
+        total_points = sum(int(p.get('Qty', 1) or 1) for p in point_list)
 
-Return ONLY valid JSON (no markdown, no code blocks):
+        prompt = f"""You are a BMS controls expert and estimator reviewing a
+complete Sequence of Operations. {total_points} control points have already
+been extracted from it section by section.
+
+Produce THREE analyses from a single read of the document below. Return
+ONLY this JSON object, no markdown, no commentary:
 
 {{
-  "project_overview": "Brief description",
-  "systems_in_scope": ["System1", "System2"],
-  "total_io_points_estimate": 150,
-  "integration_requirements": ["BACnet", "Hardwired controls"],
-  "scope_clarity": {{
-    "clearly_in_scope": ["Item1"],
-    "needs_clarification": ["Item2"],
-    "explicitly_excluded": ["Item3"]
+  "scope": {{
+    "project_overview": "Brief description of the building and systems",
+    "systems_in_scope": ["System1", "System2"],
+    "total_io_points_estimate": {total_points},
+    "integration_requirements": ["BACnet", "Hardwired controls"],
+    "scope_clarity": {{
+      "clearly_in_scope": ["Item1"],
+      "needs_clarification": ["Item2"],
+      "explicitly_excluded": ["Item3"]
+    }}
+  }},
+  "labor_estimate": {{
+    "labor_estimate": {{
+      "engineering": {{"hours": 0}},
+      "programming": {{"hours": 0}},
+      "installation": {{"hours": 0}},
+      "testing": {{"hours": 0}},
+      "training": {{"hours": 0}}
+    }},
+    "total_hours": 0,
+    "assumptions": "Brief explanation, referencing complexity drivers below"
+  }},
+  "rfis": {{
+    "rfis": ["Question that needs clarification"],
+    "exclusions": ["Item explicitly NOT in BMS scope"],
+    "risks": ["Risk if a clarification above is not resolved"]
   }}
 }}
 
-SOO TEXT (first 5000 chars - summary):
-{soo_text}
+Guidance:
+- Scope: use {total_points} as the I/O estimate rather than recounting -
+  it was produced by a dedicated section-by-section extraction pass and is
+  more reliable than a count from a single read.
+- Labour: base hours on realistic NYC/Boston market rates. Weight for
+  complexity drivers - VFDs, ERUs, multiple chiller or condenser water
+  loops - and for point volume ({total_points} points).
+- RFIs: flag genuine ambiguities, not routine scope. Note anything that
+  reads as present in a schedule but without a stated sequence, since that
+  is a common source of missed scope in BMS estimating.
 
-This is the complete SOO. Cover every system described anywhere in it."""
-        
-        message = self._call_claude(prompt, max_tokens=4000)
-        
-        return self._parse_json_response(self._extract_text(message))
+DOCUMENT:
+{soo_text}"""
+
+        message = self._call_claude(prompt, max_tokens=3500)
+        parsed = self._parse_json_response(self._extract_text(message))
+
+        # A malformed or partial response should not silently produce three
+        # empty sections; each key defaults independently so one bad block
+        # does not erase the others.
+        return {
+            "scope": parsed.get("scope", {}) if isinstance(parsed, dict) else {},
+            "labor_estimate": parsed.get("labor_estimate", {}) if isinstance(parsed, dict) else {},
+            "rfis": parsed.get("rfis", {}) if isinstance(parsed, dict) else {},
+        }
+
+    def _parse_point_array(self, cleaned, stop_reason):
+        """Parse the point-list array, salvaging a truncated response.
+
+        A large SOO can produce more points than fit in one response. When
+        that happens the array is cut off mid-object with no closing bracket,
+        and a strict parse throws away every point that did arrive. Instead,
+        trim back to the last complete object and close the array, so a
+        partial list is still usable. self.point_list_truncated records that
+        this happened so the caller can say so rather than quietly presenting
+        a short list as if it were complete.
+        """
+        self.point_list_truncated = False
+
+        start = cleaned.find('[')
+        if start < 0:
+            raise ValueError(
+                "Point list: no JSON array in response (stop_reason=%s). "
+                "First 500 chars:\n%s" % (stop_reason, cleaned[:500])
+            )
+
+        end = cleaned.rfind(']')
+        if end > start:
+            try:
+                return json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError:
+                pass  # fall through to salvage
+
+        # No closing bracket, or the array was malformed: salvage.
+        fragment = cleaned[start:]
+        while True:
+            last_obj = fragment.rfind('}')
+            if last_obj == -1:
+                raise ValueError(
+                    "Point list: response was truncated before any complete "
+                    "entry (stop_reason=%s). Nothing could be recovered."
+                    % stop_reason
+                )
+            try:
+                parsed = json.loads(fragment[:last_obj + 1] + ']')
+                self.point_list_truncated = True
+                return parsed
+            except json.JSONDecodeError:
+                # That object was itself incomplete; drop it and retry.
+                fragment = fragment[:last_obj]
     
     # ============================================================================
     # STEP 3: POINT LIST GENERATION (Claude AI)
     # ============================================================================
-    
+
     def generate_point_list(self, soo_text, progress_callback=None,
                             section_filter=None):
         """Extract control points section by section.
@@ -102,14 +213,14 @@ This is the complete SOO. Cover every system described anywhere in it."""
 
         progress_callback(done, total, label) is invoked before each section
         so the UI can report progress on a run that takes several minutes.
+        section_filter, if given, restricts extraction to chunks whose
+        label is in the set - used when the user has reviewed the detected
+        structure and chosen to run only part of the document.
         """
         from soo_chunker import build_chunks, coverage_report
 
         chunks = build_chunks(soo_text)
 
-        # A caller may restrict the run to sections it has reviewed, which
-        # both avoids paying for sections known to be irrelevant and keeps
-        # the result aligned to what was actually approved.
         if section_filter is not None:
             wanted = set(section_filter)
             chunks = [c for c in chunks if c.label in wanted]
@@ -125,8 +236,15 @@ This is the complete SOO. Cover every system described anywhere in it."""
                 progress_callback(i - 1, len(chunks), chunk.label)
 
             try:
-                points = self._extract_points_from_section(chunk)
-                status, detail = "ok", ""
+                key = self._cache_key(chunk)
+                if key in self.cache:
+                    points = [dict(p) for p in self.cache[key]]
+                    self.cache_hits += 1
+                    status, detail = "cached", ""
+                else:
+                    points = self._extract_points_from_section(chunk)
+                    self.cache[key] = [dict(p) for p in points]
+                    status, detail = "ok", ""
             except Exception as e:
                 # One bad section must not discard the other sixteen. The
                 # failure is recorded and reported, never swallowed.
@@ -152,6 +270,15 @@ This is the complete SOO. Cover every system described anywhere in it."""
         merged = self._merge_points(all_points)
         self._assign_confidence(merged, chunks)
         return merged
+
+    # Bump when the extraction prompt changes, so cached results from an
+    # older prompt are not silently reused.
+    PROMPT_VERSION = "1"
+
+    def _cache_key(self, chunk):
+        payload = "|".join((self.PROMPT_VERSION, self.EXTRACTION_MODEL,
+                            chunk.label, chunk.text))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _extract_points_from_section(self, chunk):
         """Run one extraction call scoped to a single SOO section."""
@@ -193,7 +320,8 @@ Rules:
 SECTION TEXT:
 {chunk.text}"""
 
-        message = self._call_claude(prompt, max_tokens=8000)
+        message = self._call_claude(prompt, max_tokens=8000,
+                                    model=self.EXTRACTION_MODEL)
         text = self._extract_text(message).strip()
         if not text:
             raise ValueError("model returned no text")
@@ -256,9 +384,6 @@ SECTION TEXT:
                  not be corroborated
         low    - tag does not appear in the source text, or the point spans
                  multiple sections, or no single I/O type was assigned
-
-        This mirrors the device-level rule of grading on verbatim support
-        rather than plausibility, applied here at point level.
         """
         by_label = {c.label: c.text for c in chunks}
 
@@ -280,145 +405,18 @@ SECTION TEXT:
             else:
                 pt["Confidence"] = "medium"
 
-    def _parse_point_array(self, cleaned, stop_reason):
-        """Parse the point-list array, salvaging a truncated response.
-
-        A large SOO can produce more points than fit in one response. When
-        that happens the array is cut off mid-object with no closing bracket,
-        and a strict parse throws away every point that did arrive. Instead,
-        trim back to the last complete object and close the array, so a
-        partial list is still usable. self.point_list_truncated records that
-        this happened so the caller can say so rather than quietly presenting
-        a short list as if it were complete.
-        """
-        self.point_list_truncated = False
-
-        start = cleaned.find('[')
-        if start < 0:
-            raise ValueError(
-                "Point list: no JSON array in response (stop_reason=%s). "
-                "First 500 chars:\n%s" % (stop_reason, cleaned[:500])
-            )
-
-        end = cleaned.rfind(']')
-        if end > start:
-            try:
-                return json.loads(cleaned[start:end + 1])
-            except json.JSONDecodeError:
-                pass  # fall through to salvage
-
-        # No closing bracket, or the array was malformed: salvage.
-        fragment = cleaned[start:]
-        while True:
-            last_obj = fragment.rfind('}')
-            if last_obj == -1:
-                raise ValueError(
-                    "Point list: response was truncated before any complete "
-                    "entry (stop_reason=%s). Nothing could be recovered."
-                    % stop_reason
-                )
-            try:
-                parsed = json.loads(fragment[:last_obj + 1] + ']')
-                self.point_list_truncated = True
-                return parsed
-            except json.JSONDecodeError:
-                # That object was itself incomplete; drop it and retry.
-                fragment = fragment[:last_obj]
-    
-    # ============================================================================
-    # STEP 4: LABOR ESTIMATION (Claude AI)
-    # ============================================================================
-    
-    def estimate_labor_hours(self, soo_text, point_list):
-        """Claude estimates labor hours based on complexity"""
-        
-        total_points = sum(int(p.get('Qty', 1) or 1) for p in point_list)
-        
-        prompt = f"""You are a BMS labor estimator. Estimate labor hours for this project.
-
-Project Statistics:
-- Total I/O Points: {total_points}
-- System Complexity: Analyze from SOO
-
-SOO Summary:
-{soo_text}
-
-Estimate hours for these roles (realistic NYC/Boston market, 2025):
-1. Engineering & Design (20-50 hrs)
-2. Controls Programming (30-100 hrs)  
-3. Field Installation & Wiring (40-150 hrs)
-4. System Testing & Commissioning (15-50 hrs)
-5. Operator Training (5-20 hrs)
-
-Return ONLY valid JSON (no markdown):
-
-{{
-  "labor_estimate": {{
-    "engineering": {{"hours": 0, "rate": 150}},
-    "programming": {{"hours": 0, "rate": 160}},
-    "installation": {{"hours": 0, "rate": 120}},
-    "testing": {{"hours": 0, "rate": 140}},
-    "training": {{"hours": 0, "rate": 120}}
-  }},
-  "total_hours": 0,
-  "total_labor_cost": 0,
-  "assumptions": "Brief explanation"
-}}
-
-Consider:
-- Complexity from SOO (VFD drives, ERU, multi-chiller, water loops = more complex)
-- Number of I/O points ({total_points} points estimated)
-- Integration requirements
-- Risk factors"""
-        
-        message = self._call_claude(prompt, max_tokens=3000)
-        
-        return self._parse_json_response(self._extract_text(message))
-    
-    # ============================================================================
-    # STEP 5: RFI & EXCLUSIONS DETECTION
-    # ============================================================================
-    
-    def detect_rfis_and_exclusions(self, soo_text):
-        """Claude identifies missing/unclear items and exclusions"""
-        
-        prompt = f"""You are a BMS controls specialist. Review this SOO and identify:
-
-1. RFIs (Requests for Information) - items that need clarification
-2. Exclusions - what's explicitly NOT in BMS scope
-3. Risk Items - what could cause problems if missed
-
-SOO:
-{soo_text}
-
-Return ONLY valid JSON:
-
-{{
-  "rfis": [
-    "Question 1 that needs clarification",
-    "Question 2"
-  ],
-  "exclusions": [
-    "Item explicitly NOT in BMS scope",
-    "Another exclusion"
-  ],
-  "risks": [
-    "Risk if this isn't clarified",
-    "Another risk"
-  ]
-}}"""
-        
-        message = self._call_claude(prompt, max_tokens=3000)
-        
-        return self._parse_json_response(self._extract_text(message))
-    
     # ============================================================================
     # UTILITY: JSON PARSER
     # ============================================================================
     
-    MODEL = "claude-opus-5"
+    # Per-section extraction is the bulk of the work: dozens of calls that
+    # transcribe points already written in the text. Scope, labour and RFI
+    # analysis are three calls that require judgement across the whole
+    # document, so they stay on the stronger model.
+    EXTRACTION_MODEL = "claude-sonnet-5"
+    OVERVIEW_MODEL = "claude-opus-5"
 
-    def _call_claude(self, prompt, max_tokens):
+    def _call_claude(self, prompt, max_tokens, model=None):
         """Send one prompt and return the completed Message.
 
         Uses the streaming API. The SDK refuses non-streaming requests whose
@@ -429,11 +427,19 @@ Return ONLY valid JSON:
         so .content and .stop_reason behave identically downstream.
         """
         with self.client.messages.stream(
-            model=self.MODEL,
+            model=model or self.OVERVIEW_MODEL,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
-            return stream.get_final_message()
+            message = stream.get_final_message()
+
+        if getattr(message, "usage", None):
+            bucket = "extraction" if model == self.EXTRACTION_MODEL else "overview"
+            self.usage[bucket]["input_tokens"] += getattr(message.usage, "input_tokens", 0) or 0
+            self.usage[bucket]["output_tokens"] += getattr(message.usage, "output_tokens", 0) or 0
+            self.usage[bucket]["requests"] += 1
+
+        return message
 
     def _extract_text(self, message):
         """Pull the text out of a Claude response.
@@ -503,20 +509,20 @@ Return ONLY valid JSON:
         if spec_pdf_path:
             self.spec_text = self.extract_pdf_text(spec_pdf_path)
 
-        step("Analysing scope")
-        scope = self.analyze_scope_overview(self.soo_text)
-
         points = self.generate_point_list(
             self.soo_text,
             progress_callback=progress_callback,
             section_filter=section_filter,
         )
 
-        step("Estimating labour")
-        labor = self.estimate_labor_hours(self.soo_text, points)
-
-        step("Detecting RFIs")
-        rfis = self.detect_rfis_and_exclusions(self.soo_text)
+        step("Analysing scope, labour and RFIs")
+        # One call over the whole document rather than three. It runs after
+        # extraction so the point count it is given is the real one, not a
+        # second guess from a single read.
+        analysis = self.analyze_document(self.soo_text, points)
+        scope = analysis["scope"]
+        labor = analysis["labor_estimate"]
+        rfis = analysis["rfis"]
         
         # Compile all results
         self.analysis_results = {
@@ -533,7 +539,10 @@ Return ONLY valid JSON:
                 "coverage": self.coverage,
                 "sections": self.section_results,
                 "sections_failed": [r for r in self.section_results
-                                    if r["status"] != "ok"],
+                                    if r["status"] not in ("ok", "cached")],
+                "sections_cached": sum(1 for r in self.section_results
+                                       if r["status"] == "cached"),
+                "usage": dict(self.usage),
                 "confidence_counts": {
                     level: sum(1 for p in points if p.get("Confidence") == level)
                     for level in ("high", "medium", "low")

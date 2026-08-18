@@ -81,6 +81,12 @@ st.markdown(
 )
 
 st.markdown("**Automated BMS Estimation from SOO Documents**")
+
+if len(registry):
+    with st.expander(f"📊 Projects dashboard ({len(registry)} saved)",
+                     expanded=True):
+        render_project_cards(registry, key_prefix="dash")
+    st.divider()
 st.markdown("Upload your SOO and controls spec → AI generates scope, point list, labor estimate, and professional proposal")
 
 st.divider()
@@ -90,12 +96,87 @@ st.divider()
 # ============================================================================
 
 @st.cache_resource
+def _extraction_cache():
+    """Section extractions already paid for, reused across runs."""
+    return {}
+
+
+@st.cache_resource
 def _registry():
     """One registry shared across refreshes for the life of the process."""
     return project_store.ProjectRegistry()
 
 
 registry = _registry()
+extraction_cache = _extraction_cache()
+
+def render_project_cards(registry, key_prefix):
+    """Zoho-Projects-style cards: status pill, coverage bar, key metrics.
+
+    Pure Streamlit layout over data already computed during analysis - no
+    API calls, so this costs nothing to render or to look at repeatedly.
+    """
+    names = registry.names()
+    if not names:
+        st.caption("No saved projects yet.")
+        return
+
+    per_row = 3
+    for row_start in range(0, len(names), per_row):
+        cols = st.columns(per_row)
+        for col, name in zip(cols, names[row_start:row_start + per_row]):
+            record = registry.get(name)
+            if not record:
+                continue
+            summary = record.get("summary", {}) or {}
+            status_label, status_emoji = project_store.project_status(summary)
+
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"**{name}**")
+                    st.caption(
+                        f"{record.get('source_file', '') or 'imported'} · "
+                        f"saved {record.get('saved_at', '')}"
+                    )
+                    st.markdown(f"{status_emoji} {status_label}")
+
+                    coverage = summary.get("coverage_pct")
+                    if coverage is not None:
+                        st.progress(min(max(coverage / 100, 0.0), 1.0),
+                                   text=f"Coverage {coverage}%")
+
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Points", summary.get("points", 0))
+                    m2.metric("I/O", summary.get("io_count", 0))
+                    m3.metric("Pages", summary.get("pages", 0))
+
+                    conf = summary.get("confidence_counts") or {}
+                    if conf:
+                        st.caption(
+                            f"Confidence: high {conf.get('high', 0)} · "
+                            f"medium {conf.get('medium', 0)} · "
+                            f"low {conf.get('low', 0)}"
+                        )
+
+                    b1, b2, b3 = st.columns(3)
+                    if b1.button("Open", key=f"{key_prefix}_open_{name}",
+                                use_container_width=True):
+                        st.session_state.analysis_results = record["analysis"]
+                        st.session_state.loaded_project = name
+                        st.rerun()
+                    b2.download_button(
+                        "Export", data=project_store.to_json(record),
+                        file_name=project_store.export_filename(name),
+                        mime="application/json",
+                        key=f"{key_prefix}_export_{name}",
+                        use_container_width=True,
+                    )
+                    if b3.button("Delete", key=f"{key_prefix}_delete_{name}",
+                                use_container_width=True):
+                        registry.delete(name)
+                        st.rerun()
+
+
 
 # ---- Projects ----
 st.sidebar.title("Projects")
@@ -172,6 +253,90 @@ if not api_key:
         "`ANTHROPIC_API_KEY = \"sk-ant-...\"`, then reboot the app."
     )
     st.stop()
+
+st.sidebar.divider()
+st.sidebar.subheader("Cost")
+
+# Per-million-token input/output rates, checked 2026-07-30. Sonnet 5's rate
+# is introductory through 2026-08-31; verify at anthropic.com/pricing after
+# that date, since it reverts to a higher standard rate.
+MODEL_RATES = {
+    "claude-haiku-4-5-20251001": (1.00, 5.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-5": (5.00, 25.00),
+}
+EXTRACTION_CHOICES = {
+    "Haiku 4.5 - cheapest ($1/$5 per MTok)": "claude-haiku-4-5-20251001",
+    "Sonnet 5 - balanced ($2/$10 per MTok)": "claude-sonnet-5",
+    "Opus 5 - most capable ($5/$25 per MTok)": "claude-opus-5",
+}
+extraction_label = st.sidebar.selectbox(
+    "Model for point extraction",
+    list(EXTRACTION_CHOICES),
+    index=0,
+    help="Extraction transcribes points already written in the text and is "
+         "the bulk of the requests. Scope, labour and RFI analysis always "
+         "use Opus 5, but that is only 3 requests regardless of document size.",
+)
+extraction_model = EXTRACTION_CHOICES[extraction_label]
+extraction_rate = MODEL_RATES[extraction_model]
+
+OVERVIEW_CHOICES = {
+    "Haiku 4.5 - cheapest ($1/$5 per MTok)": "claude-haiku-4-5-20251001",
+    "Sonnet 5 - balanced ($2/$10 per MTok)": "claude-sonnet-5",
+    "Opus 5 - most capable ($5/$25 per MTok)": "claude-opus-5",
+}
+overview_label = st.sidebar.selectbox(
+    "Model for scope / labour / RFI analysis",
+    list(OVERVIEW_CHOICES),
+    index=0,
+    help="Defaults to the cheapest tier for MVP use. This is the one call "
+         "that reads the whole document, so a weak model here can produce a "
+         "generic labour estimate or miss a real ambiguity. If the RFIs tab "
+         "reads as vague boilerplate rather than specific to this document, "
+         "move this one dropdown to Sonnet - it is a single request, so the "
+         "cost difference per run is small even though the per-token rate "
+         "is not.",
+)
+overview_model = OVERVIEW_CHOICES[overview_label]
+overview_rate = MODEL_RATES[overview_model]
+
+if len(extraction_cache):
+    st.sidebar.caption(f"{len(extraction_cache)} section(s) cached - free to re-run")
+    if st.sidebar.button("Clear cache", use_container_width=True):
+        extraction_cache.clear()
+        st.rerun()
+
+budget = st.sidebar.number_input(
+    "Remaining balance ($)", min_value=0.0, value=20.0, step=1.0,
+    help="What you have left in the Anthropic console. Used only to warn "
+         "you here - it does not touch billing.",
+)
+spent = st.session_state.get("session_spend_usd", 0.0)
+remaining = budget - spent
+st.sidebar.metric("Spent this session (est.)", f"${spent:.2f}",
+                  delta=f"${remaining:.2f} left" if remaining >= 0 else
+                        f"${-remaining:.2f} over", delta_color="off")
+if remaining < 1.0:
+    st.sidebar.error(
+        "Under $1 estimated remaining. A live run could fail mid-way if the "
+        "actual balance runs out. Load a saved project instead of running "
+        "the API again."
+    )
+
+st.sidebar.divider()
+st.sidebar.subheader("Demo mode")
+demo_lock = st.sidebar.checkbox(
+    "Lock: no new API calls",
+    help="For presenting live. Disables Run Analysis so nothing can spend "
+         "money or fail on a network problem in front of an audience. "
+         "Loading a saved or cached project still works.",
+)
+if demo_lock:
+    st.sidebar.success(
+        "Locked. Only saved/cached results can be shown - nothing here can "
+        "call the API or spend money."
+    )
 
 st.sidebar.divider()
 
@@ -313,9 +478,45 @@ if soo_file:
 
     if not selected:
         st.info("Select at least one system, or untick the limit to analyse all.")
+    else:
+        chosen = [c for c in chunks if c.label in selected]
+
+        # Sections already extracted at this prompt version and model cost
+        # nothing to repeat, so exclude them from the estimate.
+        probe = BMSAnalyzer.__new__(BMSAnalyzer)
+        probe.EXTRACTION_MODEL = extraction_model
+        billable = [c for c in chosen
+                    if probe._cache_key(c) not in extraction_cache]
+        cached_n = len(chosen) - len(billable)
+
+        # Roughly four characters per token: enough to size a run.
+        in_tokens = sum(len(c.text) for c in billable) // 4 + len(billable) * 250
+
+        overview_in_tokens = len(soo_text) // 4
+        est_cost = (
+            in_tokens / 1_000_000 * extraction_rate[0]
+            + overview_in_tokens / 1_000_000 * overview_rate[0]
+        )
+        msg = (
+            f"{len(billable)} extraction request(s) plus 1 combined analysis "
+            f"request, about {in_tokens + overview_in_tokens:,} input tokens, "
+            f"roughly ${est_cost:.2f}."
+        )
+        if cached_n:
+            msg += f" {cached_n} section(s) already cached and free."
+        st.caption(msg)
+
+        if demo_lock:
+            st.warning(
+                "Demo mode is locked in the sidebar. Turn it off to run the "
+                "API, or load a saved project instead."
+            )
 
     if st.button("Run Analysis", key="analyze_button",
-                 use_container_width=True, disabled=not selected):
+                 use_container_width=True,
+                 disabled=(not selected) or demo_lock):
+        if demo_lock:
+            st.stop()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
@@ -339,7 +540,12 @@ if soo_file:
                     else:
                         status.write(label)
 
-                analyzer = BMSAnalyzer(api_key)
+                analyzer = BMSAnalyzer(
+                    api_key,
+                    cache=extraction_cache,
+                    extraction_model=extraction_model,
+                    overview_model=overview_model,
+                )
                 analysis_results = analyzer.run_full_analysis(
                     soo_pdf_path=soo_path,
                     spec_pdf_path=spec_path,
@@ -349,8 +555,26 @@ if soo_file:
                 bar.progress(1.0)
                 status.empty()
 
+                usage = analysis_results.get("metadata", {}).get("usage", {})
+                ex = usage.get("extraction", {})
+                ov = usage.get("overview", {})
+                run_cost = (
+                    ex.get("input_tokens", 0) / 1_000_000 * extraction_rate[0]
+                    + ex.get("output_tokens", 0) / 1_000_000 * extraction_rate[1]
+                    + ov.get("input_tokens", 0) / 1_000_000 * overview_rate[0]
+                    + ov.get("output_tokens", 0) / 1_000_000 * overview_rate[1]
+                )
+                st.session_state.session_spend_usd = (
+                    st.session_state.get("session_spend_usd", 0.0) + run_cost
+                )
+
+                total_in = ex.get("input_tokens", 0) + ov.get("input_tokens", 0)
+                total_out = ex.get("output_tokens", 0) + ov.get("output_tokens", 0)
                 st.session_state.analysis_results = analysis_results
-                st.success("Analysis complete.")
+                st.success(
+                    f"Analysis complete. This run used {total_in:,} input and "
+                    f"{total_out:,} output tokens, about ${run_cost:.2f}."
+                )
 
             except Exception as e:
                 st.error(f"Error during analysis: {e}")
@@ -395,8 +619,9 @@ if "analysis_results" in st.session_state:
     )
 
     if len(registry):
-        with st.expander(f"Projects in this session ({len(registry)})"):
-            st.dataframe(registry.rows(), use_container_width=True)
+        with st.expander(f"Projects in this session ({len(registry)})",
+                         expanded=False):
+            render_project_cards(registry, key_prefix="results")
 
     st.divider()
 
@@ -528,36 +753,30 @@ if "analysis_results" in st.session_state:
             labor_breakdown = labor.get("labor_estimate", {})
             labor_data = []
             total_hours = 0
-            total_cost = 0
             
             for task, data in labor_breakdown.items():
                 if isinstance(data, dict):
-                    hours = data.get("hours", 0)
-                    rate = data.get("rate", 0)
-                    cost = hours * rate
+                    hours = data.get("hours", 0) or 0
+                    try:
+                        hours = float(hours)
+                    except (TypeError, ValueError):
+                        hours = 0
                     
                     labor_data.append({
                         "Task": task.replace("_", " ").title(),
                         "Hours": hours,
-                        "Rate": f"${rate}",
-                        "Cost": f"${cost:,.0f}"
                     })
-                    
                     total_hours += hours
-                    total_cost += cost
             
             if labor_data:
                 st.dataframe(labor_data, use_container_width=True)
             
             st.divider()
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Hours", total_hours)
-            with col2:
-                st.metric("Avg Rate", f"${total_cost/total_hours:.0f}/hr" if total_hours > 0 else "$0")
-            with col3:
-                st.metric("Total Cost", f"${total_cost:,.0f}")
+            st.metric("Total Hours", f"{total_hours:,.0f}")
+            st.caption(
+                "Hours only. Rates and cost are a separate business decision "
+                "applied outside this tool, not part of the AI-generated estimate."
+            )
         else:
             st.info("No labor estimate available")
     
@@ -592,10 +811,13 @@ if "analysis_results" in st.session_state:
         )
 
         if cov:
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Sections analysed", cov.get("chunk_count", 0))
             c2.metric("Document covered", f"{cov.get('coverage_pct', 0)}%")
             c3.metric("Largest section", f"{cov.get('largest_chunk', 0):,} ch")
+            c4.metric("Reused from cache", meta.get("sections_cached", 0),
+                      help="Sections whose text was unchanged since a previous "
+                           "run, so no request was made for them.")
             st.caption(
                 "Coverage below 100% is expected: administrative sections such as "
                 "Related Documents, Summary and Definitions contain no control "

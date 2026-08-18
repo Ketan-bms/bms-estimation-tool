@@ -16,6 +16,7 @@ can be tested directly against a real SOO.
 """
 
 import re
+import collections
 
 # A section number sitting alone on a line: "1.7", "3.10"
 _SECTION_NUM = re.compile(r'^\s*(\d+\.\d+)\s*$')
@@ -93,6 +94,33 @@ def _looks_like_boilerplate(number, title):
     if upper.strip() == "GENERAL":
         return True
     return False
+
+
+def strip_page_furniture(text, min_len=12, page_fraction=0.5):
+    """Remove running headers and footers repeated on most pages.
+
+    A specification repeats its project name, copyright line and issue date
+    on every page. That text is sent to the model with each chunk and paid
+    for each time, while carrying no sequence content.
+
+    Only lines of at least `min_len` characters are considered, which keeps
+    list markers such as "1." and "a." - they repeat constantly but are
+    structural and must survive. Page markers are always kept, since page
+    provenance depends on them.
+    """
+    lines = text.split("\n")
+    pages = max(1, text.count("--- PAGE"))
+    threshold = max(3, pages * page_fraction)
+
+    counts = collections.Counter(
+        line.strip() for line in lines
+        if len(line.strip()) >= min_len and not line.strip().startswith("--- PAGE")
+    )
+    furniture = {line for line, count in counts.items() if count >= threshold}
+    if not furniture:
+        return text
+
+    return "\n".join(line for line in lines if line.strip() not in furniture)
 
 
 def parse_sections(text):

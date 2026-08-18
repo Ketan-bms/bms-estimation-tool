@@ -42,9 +42,34 @@ def make_record(project_name, source_filename, analysis_results):
             "pages": metadata.get("soo_pages", 0),
             "coverage_pct": (metadata.get("coverage", {}) or {}).get("coverage_pct"),
             "sections_failed": len(metadata.get("sections_failed", []) or []),
+            "confidence_counts": metadata.get("confidence_counts", {}) or {},
         },
         "analysis": analysis_results,
     }
+
+
+def project_status(summary):
+    """A rough at-a-glance health signal for a saved project's card.
+
+    This is not a judgement on the underlying estimate - only a fast visual
+    scan across several saved projects, the way a PM dashboard flags status
+    without requiring you to open each one. "Complete" means the run finished
+    cleanly and mostly-verified; it does not mean the numbers are correct.
+    """
+    summary = summary or {}
+    failed = summary.get("sections_failed", 0) or 0
+    coverage = summary.get("coverage_pct")
+    conf = summary.get("confidence_counts") or {}
+    total_conf = sum(conf.values())
+    low_ratio = (conf.get("low", 0) / total_conf) if total_conf else 0
+
+    if failed:
+        return "Incomplete", "🔴"
+    if coverage is not None and coverage < 80:
+        return "Low coverage", "🟡"
+    if total_conf and low_ratio > 0.4:
+        return "Needs review", "🟡"
+    return "Complete", "🟢"
 
 
 def to_json(record):
