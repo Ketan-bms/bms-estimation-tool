@@ -20,6 +20,7 @@ try:
     from output_generators import OutputGenerator
     from soo_chunker import build_chunks, coverage_report
     import project_store
+    import ground_truth
 except ImportError as e:
     st.error(
         f"A required module could not be imported: {e}\n\n"
@@ -630,10 +631,11 @@ if "analysis_results" in st.session_state:
     st.markdown('<p class="section-style">📊 Step 3: Analysis Results</p>', unsafe_allow_html=True)
     
     # ===== TABS FOR RESULTS =====
-    tab1, tab2, tab6, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab6, tab7, tab3, tab4, tab5 = st.tabs([
         "Scope",
         "Points",
         "Coverage",
+        "Accuracy",
         "Labor",
         "RFIs",
         "Metadata",
@@ -793,8 +795,23 @@ if "analysis_results" in st.session_state:
             st.subheader("❌ Exclusions")
             for exc in rfis["exclusions"]:
                 st.write(f"• {exc}")
-        
-        if not rfis.get("rfis") and not rfis.get("exclusions"):
+
+        spec_check = results.get("spec_cross_check")
+        if spec_check is not None:
+            devices = spec_check.get("devices_without_sequence", [])
+            st.subheader("🔍 Controls Spec Cross-Check")
+            st.caption(
+                "Equipment named in the uploaded controls spec with no "
+                "matching point in the SOO extraction - a device that may "
+                "be scheduled with no stated control sequence."
+            )
+            if devices:
+                for d in devices:
+                    st.write(f"• {d}")
+            else:
+                st.write("No unmatched equipment found.")
+
+        if not rfis.get("rfis") and not rfis.get("exclusions") and not spec_check:
             st.info("No RFIs or exclusions identified")
     
     # --- TAB 6: COVERAGE ---
@@ -855,6 +872,117 @@ if "analysis_results" in st.session_state:
                     "correct for narrative sections, but worth a glance: "
                     + ", ".join(r["section"][:40] for r in empty[:5])
                 )
+
+    # --- TAB 7: ACCURACY (vs. ground truth) ---
+    with tab7:
+        st.subheader("Compare against an engineer's point list")
+        st.caption(
+            "Coverage tells you how much of the document was read. This "
+            "tells you whether the extracted points are actually correct, "
+            "by matching them against a real point matrix - typically "
+            "produced by the mechanical/controls engineer for the same "
+            "project. Matching is done by wording similarity, so it is not "
+            "perfect: read the borderline matches yourself before trusting "
+            "them."
+        )
+
+        gt_file = st.file_uploader(
+            "Upload the ground-truth point matrix (PDF)",
+            type="pdf",
+            key="ground_truth_upload",
+            help="A table-format point list: System, Point Description, "
+                 "I/O columns, Notes - the kind an engineer issues alongside "
+                 "the SOO."
+        )
+
+        if gt_file is not None:
+            if st.button("Run comparison", key="run_gt_compare"):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    gt_path = os.path.join(tmpdir, "ground_truth.pdf")
+                    with open(gt_path, "wb") as f:
+                        f.write(gt_file.getbuffer())
+
+                    try:
+                        with st.spinner("Parsing ground-truth table..."):
+                            gt_points = ground_truth.parse_point_matrix(gt_path)
+                        st.session_state.gt_comparison = ground_truth.compare(
+                            results.get("point_list", []), gt_points
+                        )
+                        st.session_state.gt_point_count = len(gt_points)
+                    except ValueError as e:
+                        st.error(str(e))
+                        st.session_state.pop("gt_comparison", None)
+
+        if "gt_comparison" in st.session_state:
+            r = st.session_state.gt_comparison
+
+            st.divider()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Ground-truth points", r["n_ground_truth"])
+            c2.metric("Extracted points", r["n_extracted"])
+            c3.metric("Matched", r["n_matched"],
+                     help=f"{r['n_confident']} confident, {r['n_borderline']} borderline")
+
+            c4, c5 = st.columns(2)
+            c4.metric("Recall (confident matches only)",
+                      f"{r['recall_confident']:.1%}",
+                      help="Share of ground-truth points found with a strong "
+                           "wording match. The conservative number.")
+            c5.metric("Recall (all matches)", f"{r['recall_all']:.1%}",
+                      help="Includes borderline matches - wording overlap "
+                           "that may or may not be the same point. The "
+                           "optimistic number.")
+
+            if r["n_borderline"] > r["n_confident"]:
+                st.warning(
+                    "More borderline matches than confident ones - the gap "
+                    "between the two recall numbers above is real. Spot-check "
+                    "the borderline matches before quoting either figure."
+                )
+
+            with st.expander(f"Missed ground-truth points ({len(r['missed'])})"):
+                st.caption("In the ground truth, no corresponding extracted point found.")
+                if r["missed"]:
+                    st.dataframe(
+                        [{"System": m["system"], "Point": m["point_description"],
+                          "Page": m["page"]} for m in r["missed"]],
+                        use_container_width=True, height=300,
+                    )
+                else:
+                    st.write("None.")
+
+            with st.expander(f"Borderline matches ({r['n_borderline']}) - verify these"):
+                st.caption(
+                    "Wording similarity crossed the threshold but not the "
+                    "confident bar. Some are real matches in different words; "
+                    "some share vocabulary without being the same point."
+                )
+                borderline = [m for m in r["matches"] if m["tier"] == "borderline"]
+                if borderline:
+                    st.dataframe(
+                        [{"Ground truth": m["ground_truth"]["point_description"],
+                          "Extracted": m["extracted"].get("Point_Name", ""),
+                          "Similarity": m["similarity"]} for m in borderline],
+                        use_container_width=True, height=250,
+                    )
+                else:
+                    st.write("None.")
+
+            with st.expander(f"Extra extracted points ({len(r['extra'])})"):
+                st.caption(
+                    "In the extraction, no corresponding ground-truth point "
+                    "found. Not necessarily wrong - could be different "
+                    "terminology, or a genuine point the ground truth omits."
+                )
+                if r["extra"]:
+                    st.dataframe(
+                        [{"Equipment": e.get("Equipment", ""),
+                          "Point": e.get("Point_Name", ""),
+                          "Confidence": e.get("Confidence", "")} for e in r["extra"]],
+                        use_container_width=True, height=250,
+                    )
+                else:
+                    st.write("None.")
 
     # --- TAB 5: METADATA ---
     with tab5:

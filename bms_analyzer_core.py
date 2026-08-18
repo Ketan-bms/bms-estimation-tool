@@ -75,7 +75,7 @@ class BMSAnalyzer:
     # STEP 2: SCOPE ANALYSIS (Claude AI)
     # ============================================================================
     
-    def analyze_document(self, soo_text, point_list):
+    def analyze_document(self, soo_text, point_list, spec_text=""):
         """Scope, labour and RFI analysis in one call.
 
         These were originally three separate calls, each sending the entire
@@ -85,16 +85,52 @@ class BMSAnalyzer:
         exceeding the cost of every per-section extraction call combined.
         None of the three tasks needs its own read: scope, labour and RFI
         judgement can all be formed from one pass, so this sends the
-        document once and asks for all three JSON blocks together.
+        document once and asks for all three (or four, with spec_text) JSON
+        blocks together.
+
+        spec_text, if provided, adds a fourth analysis: equipment named in
+        the controls spec that has no corresponding points in the SOO
+        extraction - a device scheduled with no stated control sequence is
+        a common source of scope that gets missed rather than excluded.
+        This roughly doubles the size of this one call when used, since the
+        spec is sent in full alongside the SOO.
         """
         total_points = sum(int(p.get('Qty', 1) or 1) for p in point_list)
+        equipment_found = sorted({
+            str(p.get("Equipment", "")).strip()
+            for p in point_list if str(p.get("Equipment", "")).strip()
+        })
+
+        spec_block = ""
+        spec_schema = ""
+        spec_guidance = ""
+        if spec_text.strip():
+            spec_schema = ''',
+  "spec_cross_check": {{
+    "devices_without_sequence": [
+      "Tag or description of equipment named in the spec with no matching point above"
+    ]
+  }}'''
+            spec_guidance = f"""
+- Spec cross-check: equipment already found in the SOO extraction is:
+  {', '.join(equipment_found) if equipment_found else '(none extracted)'}
+  Read the controls specification below and list equipment or device tags
+  it names that do NOT appear in that list - these are devices that may be
+  scheduled with no stated control sequence, a common source of scope that
+  gets missed rather than deliberately excluded. Only list genuine
+  equipment/device references, not general requirements text."""
+            spec_block = f"""
+
+CONTROLS SPECIFICATION (cross-check against the equipment list above):
+{spec_text}"""
 
         prompt = f"""You are a BMS controls expert and estimator reviewing a
 complete Sequence of Operations. {total_points} control points have already
 been extracted from it section by section.
 
-Produce THREE analyses from a single read of the document below. Return
-ONLY this JSON object, no markdown, no commentary:
+Produce {'FOUR' if spec_text.strip() else 'THREE'} analyses from a single
+read of the document(s) below. Return ONLY this JSON object, no markdown,
+no commentary:
 
 {{
   "scope": {{
@@ -123,7 +159,7 @@ ONLY this JSON object, no markdown, no commentary:
     "rfis": ["Question that needs clarification"],
     "exclusions": ["Item explicitly NOT in BMS scope"],
     "risks": ["Risk if a clarification above is not resolved"]
-  }}
+  }}{spec_schema}
 }}
 
 Guidance:
@@ -135,22 +171,29 @@ Guidance:
   loops - and for point volume ({total_points} points).
 - RFIs: flag genuine ambiguities, not routine scope. Note anything that
   reads as present in a schedule but without a stated sequence, since that
-  is a common source of missed scope in BMS estimating.
+  is a common source of missed scope in BMS estimating.{spec_guidance}
 
 DOCUMENT:
-{soo_text}"""
+{soo_text}{spec_block}"""
 
-        message = self._call_claude(prompt, max_tokens=3500)
+        message = self._call_claude(
+            prompt, max_tokens=4000 if spec_text.strip() else 3500
+        )
         parsed = self._parse_json_response(self._extract_text(message))
 
         # A malformed or partial response should not silently produce three
         # empty sections; each key defaults independently so one bad block
         # does not erase the others.
-        return {
+        result = {
             "scope": parsed.get("scope", {}) if isinstance(parsed, dict) else {},
             "labor_estimate": parsed.get("labor_estimate", {}) if isinstance(parsed, dict) else {},
             "rfis": parsed.get("rfis", {}) if isinstance(parsed, dict) else {},
         }
+        if spec_text.strip():
+            result["spec_cross_check"] = (
+                parsed.get("spec_cross_check", {}) if isinstance(parsed, dict) else {}
+            )
+        return result
 
     def _parse_point_array(self, cleaned, stop_reason):
         """Parse the point-list array, salvaging a truncated response.
@@ -519,7 +562,7 @@ SECTION TEXT:
         # One call over the whole document rather than three. It runs after
         # extraction so the point count it is given is the real one, not a
         # second guess from a single read.
-        analysis = self.analyze_document(self.soo_text, points)
+        analysis = self.analyze_document(self.soo_text, points, spec_text=self.spec_text)
         scope = analysis["scope"]
         labor = analysis["labor_estimate"]
         rfis = analysis["rfis"]
