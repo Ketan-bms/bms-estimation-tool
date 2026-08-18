@@ -30,72 +30,6 @@ except ImportError as e:
     )
     st.stop()
 
-# ============================================================================
-# PAGE CONFIG
-# ============================================================================
-
-st.set_page_config(
-    page_title="BMS Estimation Tool",
-    page_icon="🏢",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# ============================================================================
-# STYLES
-# ============================================================================
-
-st.markdown("""
-    <style>
-    .header-style {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #0066cc;
-    }
-    .section-style {
-        font-size: 1.5rem;
-        font-weight: bold;
-        margin-top: 2rem;
-    }
-    .success-box {
-        background-color: #d4edda;
-        border-left: 5px solid #28a745;
-        padding: 1rem;
-        border-radius: 4px;
-    }
-    .error-box {
-        background-color: #f8d7da;
-        border-left: 5px solid #f5c6cb;
-        padding: 1rem;
-        border-radius: 4px;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# ============================================================================
-# TITLE
-# ============================================================================
-
-st.markdown(
-    '<p class="header-style">🏢 BMS ESTIMATION TOOL</p>',
-    unsafe_allow_html=True
-)
-
-st.markdown("**Automated BMS Estimation from SOO Documents**")
-
-if len(registry):
-    with st.expander(f"📊 Projects dashboard ({len(registry)} saved)",
-                     expanded=True):
-        render_project_cards(registry, key_prefix="dash")
-    st.divider()
-st.markdown("Upload your SOO and controls spec → AI generates scope, point list, labor estimate, and professional proposal")
-
-st.divider()
-
-# ============================================================================
-# SIDEBAR - API KEY & SETTINGS
-# ============================================================================
-
 @st.cache_resource
 def _extraction_cache():
     """Section extractions already paid for, reused across runs."""
@@ -177,7 +111,73 @@ def render_project_cards(registry, key_prefix):
                         registry.delete(name)
                         st.rerun()
 
+# ============================================================================
+# PAGE CONFIG
+# ============================================================================
 
+st.set_page_config(
+    page_title="BMS Estimation Tool",
+    page_icon="🏢",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ============================================================================
+# STYLES
+# ============================================================================
+
+st.markdown("""
+    <style>
+    .header-style {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #0066cc;
+    }
+    .section-style {
+        font-size: 1.5rem;
+        font-weight: bold;
+        margin-top: 2rem;
+    }
+    .success-box {
+        background-color: #d4edda;
+        border-left: 5px solid #28a745;
+        padding: 1rem;
+        border-radius: 4px;
+    }
+    .error-box {
+        background-color: #f8d7da;
+        border-left: 5px solid #f5c6cb;
+        padding: 1rem;
+        border-radius: 4px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ============================================================================
+# TITLE
+# ============================================================================
+
+st.markdown(
+    '<p class="header-style">🏢 BMS ESTIMATION TOOL</p>',
+    unsafe_allow_html=True
+)
+
+st.markdown("**Automated BMS Estimation from SOO Documents**")
+
+if len(registry):
+    with st.expander(f"📊 Projects dashboard ({len(registry)} saved)",
+                     expanded=True):
+        render_project_cards(registry, key_prefix="dash")
+    st.divider()
+st.markdown("Upload your SOO and controls spec → AI generates scope, point list, labor estimate, and professional proposal")
+
+st.divider()
+
+
+
+# ============================================================================
+# SIDEBAR - API KEY & SETTINGS
+# ============================================================================
 
 # ---- Projects ----
 st.sidebar.title("Projects")
