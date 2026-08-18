@@ -731,68 +731,111 @@ SECTION TEXT:
 
         This response scales with panel count (one labor row per system),
         so a document with many systems is the one most likely to hit its
-        token budget mid-response - which happened on a real 58-panel
-        document: the response was cut off partway through the RFIs list,
-        after scope and the full labor table had already been generated
-        completely.
+        token budget mid-response. Two different truncation shapes have
+        been seen on real documents:
 
-        A hard failure there would have discarded a complete, usable labor
-        table over an incomplete RFI list - the least important of the
-        three sections lost to truncation, taking the other two down with
-        it. Instead, salvage recovers whichever top-level keys (scope,
-        labor_estimate, rfis, spec_cross_check) finished completely, in
-        the order the model wrote them, and only the trailing incomplete
-        one is dropped. self.analysis_truncated records that this
-        happened so the caller can say so rather than presenting a
-        partial result as complete.
+        1. Truncated AFTER labor_estimate finished, mid-way through RFIs.
+           Recovering complete top-level keys is enough here - scope and
+           the full labor table are already done.
+        2. Truncated INSIDE labor_estimate.systems itself, after dozens of
+           complete panel rows but before the array closes. Top-level
+           salvage alone fails this case: since labor_estimate never
+           finishes, none of its rows count as a "complete top-level key",
+           and every row that did arrive intact gets discarded along with
+           the one that didn't.
+
+        Case 2 is handled by locating the systems array directly by string
+        position and salvaging it on its own, independent of whether the
+        surrounding scope/labor_estimate/rfis structure is valid - so
+        forty complete rows are kept even when row forty-one is not.
+        self.analysis_truncated records that either path fired, so the
+        caller can say so rather than presenting a partial result as
+        complete.
         """
         self.analysis_truncated = False
         cleaned = re.sub(r'```json\s*', '', text.strip())
         cleaned = re.sub(r'```\s*', '', cleaned)
 
         start = cleaned.find('{')
-        end = cleaned.rfind('}')
         if start < 0:
             raise ValueError(
                 "Combined analysis: no JSON object found in response "
                 "(stop_reason=%s). First 300 chars:\n%s"
                 % (getattr(message, "stop_reason", "unknown"), cleaned[:300])
             )
+        cleaned = cleaned[start:]
 
-        if end > start:
+        # Tier 1: full parse.
+        end = cleaned.rfind('}')
+        if end > 0:
             try:
-                return json.loads(cleaned[start:end + 1])
+                return json.loads(cleaned[:end + 1])
             except json.JSONDecodeError:
-                pass  # fall through to salvage
+                pass
 
-        salvaged = self._salvage_top_level_object(cleaned[start:])
-        if salvaged is not None:
+        # Tier 2: complete top-level keys (handles truncation after
+        # labor_estimate has already finished).
+        salvaged = self._salvage_balanced(cleaned)
+        if salvaged is not None and salvaged.get("labor_estimate", {}).get("systems"):
             self.analysis_truncated = True
             return salvaged
+
+        # Tier 3: labor_estimate.systems truncated mid-array. Recover the
+        # array directly by position, then rebuild scope/labor_estimate
+        # around it from whatever else salvaged cleanly.
+        systems_start = self._find_value_start(cleaned, "systems")
+        if systems_start is not None:
+            systems = self._salvage_balanced(cleaned[systems_start:])
+            if systems:
+                self.analysis_truncated = True
+                result = salvaged if isinstance(salvaged, dict) else {}
+                result.setdefault("scope", {})
+                result["labor_estimate"] = {
+                    "systems": systems,
+                    "assumptions": (result.get("labor_estimate") or {}).get("assumptions", ""),
+                }
+                result.setdefault("rfis", {})
+                return result
 
         raise ValueError(
             "Combined analysis: JSON was malformed and nothing could be "
             "salvaged (stop_reason=%s). This usually means the response "
-            "was truncated before even one section (scope, labor, RFIs) "
-            "finished - most likely this document's panel count exceeds "
-            "the current token budget by a wide margin. Last 300 chars:\n%s"
+            "was truncated before even one labor row finished - most "
+            "likely this document's panel count exceeds the current "
+            "token budget by a wide margin. Last 300 chars:\n%s"
             % (getattr(message, "stop_reason", "unknown"), cleaned[-300:])
         )
 
     @staticmethod
-    def _salvage_top_level_object(text):
-        """Recover the largest valid object from JSON text that may be
-        truncated mid-value, keeping only fully-completed top-level keys.
+    def _salvage_balanced(text):
+        """Recover the largest valid JSON value from text that starts with
+        '{' or '[' and may be truncated mid-way through.
 
-        Walks the text tracking bracket depth and string state (respecting
-        escaped quotes, so a literal '}' inside a string value is not
-        mistaken for a real closing brace). Every time depth returns to 1 -
-        back at the outer object's own level - a top-level key's value has
-        just finished, and that position is recorded. Whatever comes after
-        the last such position is an incomplete trailing key and is cut,
-        not repaired; there is no way to know what a half-written value
-        was going to say.
+        Generalizes the point-list array salvage to work on either an
+        object or an array root, and to be callable on ANY bracketed
+        substring - not just the response's outer object. That matters
+        because truncation does not always happen conveniently between
+        top-level keys: a document with enough panels can get cut off
+        mid-way through the labor_estimate.systems array itself, after
+        dozens of complete rows. Salvaging only whole top-level keys would
+        then discard the entire labor table, including every row that
+        arrived intact, because "labor_estimate" itself never finished.
+        Calling this directly on the systems array's own text recovers
+        those rows regardless of what happened elsewhere in the response.
+
+        Tracks bracket depth and string state (respecting escaped quotes,
+        so a literal '}' inside a string value is not mistaken for a real
+        closing bracket). Every time depth returns to 1 - back at the
+        root value's own level - a child element has just finished, and
+        that position is recorded. If the root itself closes cleanly, the
+        full value is returned. Otherwise, whatever comes after the last
+        recorded position is an incomplete trailing element and is cut,
+        not repaired.
         """
+        if not text or text[0] not in "{[":
+            return None
+        closing = "}" if text[0] == "{" else "]"
+
         depth = 0
         in_string = False
         escape = False
@@ -816,6 +859,13 @@ SECTION TEXT:
                 depth -= 1
                 if depth == 1:
                     last_complete_end = i + 1
+                elif depth == 0:
+                    # Root closed cleanly - no salvage needed, this is a
+                    # complete value in its own right.
+                    try:
+                        return json.loads(text[:i + 1])
+                    except json.JSONDecodeError:
+                        pass
             elif ch == ',' and depth == 1:
                 last_complete_end = i
 
@@ -825,12 +875,23 @@ SECTION TEXT:
         candidate = text[:last_complete_end].rstrip()
         if candidate.endswith(','):
             candidate = candidate[:-1]
-        candidate += '}'
+        candidate += closing
 
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:
             return None
+
+    @staticmethod
+    def _find_value_start(text, key):
+        """Find where a JSON key's value begins (the '{' or '[' right
+        after "key":), returning None if that key isn't present. Used to
+        locate a nested value (like labor_estimate.systems) directly in
+        raw text, without needing the surrounding JSON to be valid."""
+        m = re.search(r'"%s"\s*:\s*' % re.escape(key), text)
+        if not m:
+            return None
+        return m.end()
 
     def _parse_json_response(self, text):
         """Parse JSON from Claude response, handling markdown"""
