@@ -60,6 +60,62 @@ class OutputGenerator:
             except KeyError:
                 pass
 
+    # Common BMS/HVAC acronyms seen in real SOO headings, preserved as-is
+    # when normalizing an ALL-CAPS heading. A length-based heuristic (e.g.
+    # "5 letters or fewer is an acronym") looks appealing but misfires
+    # constantly - WATER, VALVE, UNIT, COIL, FIRE are ordinary 4-5 letter
+    # words, not acronyms, and would incorrectly stay uppercase. A curated
+    # whitelist is slower to extend but doesn't have that failure mode.
+    _KNOWN_ACRONYMS = {
+        "DDC", "VFD", "AHU", "ERU", "DOAS", "HVAC", "BMS", "CT", "PCW",
+        "CW", "HW", "CHW", "VAV", "FCU", "EF", "SF", "RF", "OA", "RA",
+        "SA", "EA", "CO2", "UPS", "ATS", "FSD", "WSHP", "ASHP", "DX",
+        "RTU", "MAU", "ERV", "HRV", "BACNET",
+    }
+
+    @classmethod
+    def _normalize_title_case(cls, text):
+        """If a heading is entirely upper-case, as some SOO formats write
+        their section titles, convert it to a more readable case for a
+        client-facing document - known acronyms are preserved, everything
+        else is capitalized normally. Text that already has mixed case
+        (meaning the source document formatted it the way it should read)
+        is left completely untouched, since two different SOOs in the
+        same proposal run can use different heading conventions and only
+        one of them needs fixing.
+        """
+        if not text or text != text.upper():
+            return text
+
+        def fix_word(m):
+            w = m.group(0)
+            return w if w in cls._KNOWN_ACRONYMS else (w[0] + w[1:].lower())
+
+        return re.sub(r'[A-Za-z]+', fix_word, text)
+
+    @classmethod
+    def _clean_section_title(cls, section_label):
+        """Strip the SOO's own section numbering/lettering from a section
+        label for display in the proposal, e.g. "1.8 PRIMARY CONDENSER
+        WATER SYSTEM" -> "Primary Condenser Water System", or a
+        subsectioned label like "3.2 SEQUENCE OF OPERATION - A. Energy
+        Recovery Unit" -> "Energy Recovery Unit" (the innermost, most
+        specific segment).
+
+        Without this, a numbered proposal heading like "1. A. Energy
+        Recovery Unit..." shows two competing numbering schemes stacked on
+        top of each other - the SOO's own lettering leaking through next
+        to this document's own numbering. Case is also normalized: two
+        SOOs in the same run can use different heading conventions (one
+        Title Case, one ALL CAPS), and headings should read consistently
+        regardless of which source produced them.
+        """
+        name = section_label.rsplit(" - ", 1)[-1]
+        name = re.sub(r'^\s*(\d+\.\d+|[A-Z]{1,2})\.?\s+', '', name)
+        name = re.sub(r'\s*\(part \d+/\d+\)\s*$', '', name)
+        name = re.sub(r'\s+', ' ', name).strip() or section_label
+        return cls._normalize_title_case(name)
+
     def generate_word_proposal(self, analysis_results, project_name, output_path):
         """Generate a system-wise scope-of-work document.
 
@@ -82,13 +138,42 @@ class OutputGenerator:
             points = analysis_results.get("point_list", [])
             metadata = analysis_results.get("metadata", {})
 
-            # ===== TITLE =====
+            # ===== LETTERHEAD =====
             title = doc.add_paragraph()
-            title_run = title.add_run(f"{project_name} - BMS Scope of Work")
-            title_run.font.size = Pt(18)
+            title_run = title.add_run(f"Re: {project_name}")
+            title_run.font.size = Pt(14)
             title_run.font.bold = True
-            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            doc.add_paragraph(f"Prepared: {self.timestamp}").alignment = WD_ALIGN_PARAGRAPH.CENTER
+            doc.add_paragraph(f"Date: {self.timestamp}")
+            doc.add_paragraph()
+
+            doc.add_paragraph("To All Bidders:")
+            doc.add_paragraph(
+                "As an authorized representative of Honeywell, Inc., we are "
+                "pleased to provide our scope of work for the Automatic "
+                "Temperature Controls and Building Automation Systems, based "
+                "on our review of the provided Sequence of Operations."
+            )
+
+            # ===== SCOPE OF WORK (standard commitments) =====
+            # This lettered block is standard company-wide language that
+            # appears near-verbatim across every real proposal reviewed -
+            # not derived from the SOO, so it is safe to include without
+            # any project-specific data behind it.
+            doc.add_heading("Scope of Work:", level=1)
+            standard_provisions = [
+                "Provide Honeywell Comfort Point Open stand-alone BMS "
+                "systems and installation services to meet the requirements "
+                "of the project specifications, designed to control the "
+                "equipment identified in the sections below.",
+                "Provide Honeywell DDC controllers networked to the "
+                "converged network provided by others.",
+                "Provide Honeywell Enterprise Building Integrator graphical "
+                "user interface software package with required server "
+                "support hardware, as necessary to support the features "
+                "and functions defined below.",
+            ]
+            for item in standard_provisions:
+                doc.add_paragraph(item, style='List Bullet')
             doc.add_paragraph()
 
             # ===== OVERVIEW =====
@@ -129,10 +214,11 @@ class OutputGenerator:
                 for i, section in enumerate(sections_order, 1):
                     section_points = by_section[section]
                     pages = section_points[0].get("Source_Pages", "")
+                    clean_title = self._clean_section_title(section)
 
                     heading = doc.add_paragraph()
                     heading_run = heading.add_run(
-                        f"{i}. {section}" + (f"  (SOO p{pages})" if pages else "")
+                        f"{i}. {clean_title}" + (f"  (SOO p{pages})" if pages else "")
                     )
                     heading_run.font.bold = True
                     heading_run.font.size = Pt(12)
@@ -161,6 +247,8 @@ class OutputGenerator:
                             tag_run = tag_para.add_run(tag)
                             tag_run.font.bold = True
                             tag_run.font.italic = True
+                        if by_equip[tag]:
+                            doc.add_paragraph("We will provide the following hardwired points:")
                         for pt in by_equip[tag]:
                             name = pt.get("Point_Name", "")
                             qty = pt.get("Qty", "")
@@ -233,6 +321,14 @@ class OutputGenerator:
                     )
                     assumptions_run.font.italic = True
                     assumptions_run.font.size = Pt(9)
+
+            # ===== CLOSING =====
+            doc.add_paragraph()
+            doc.add_paragraph("If we can be of any further assistance, please contact our office.")
+            doc.add_paragraph()
+            doc.add_paragraph("Sincerely,")
+            sig = doc.add_paragraph()
+            sig.add_run("TEC Building Systems, LLC").font.bold = True
 
             doc.save(output_path)
             return True
