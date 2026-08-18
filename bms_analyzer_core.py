@@ -26,6 +26,7 @@ class BMSAnalyzer:
         self.section_results_truncated = False
         self.analysis_truncated = False
         self.section_results = []
+        self.section_narratives = {}
         self.coverage = {}
         # Maps a hash of (section text + model + prompt version) to the
         # points already extracted from it. Re-running an unchanged document
@@ -466,6 +467,7 @@ DOCUMENT:
 
         self.coverage = coverage_report(soo_text, chunks)
         self.section_results = []
+        self.section_narratives = {}
 
         all_points = []
         for i, chunk in enumerate(chunks, 1):
@@ -475,23 +477,30 @@ DOCUMENT:
             try:
                 key = self._cache_key(chunk)
                 if key in self.cache:
-                    points = [dict(p) for p in self.cache[key]]
+                    cached = self.cache[key]
+                    points = [dict(p) for p in cached.get("points", [])]
+                    narrative = list(cached.get("narrative", []))
                     self.cache_hits += 1
                     status, detail = "cached", ""
                 else:
-                    points = self._extract_points_from_section(chunk)
-                    self.cache[key] = [dict(p) for p in points]
+                    points, narrative = self._extract_points_from_section(chunk)
+                    self.cache[key] = {
+                        "points": [dict(p) for p in points],
+                        "narrative": list(narrative),
+                    }
                     status, detail = "ok", ""
             except Exception as e:
                 # One bad section must not discard the other sixteen. The
                 # failure is recorded and reported, never swallowed.
-                points, status, detail = [], "failed", str(e)[:300]
+                points, narrative, status, detail = [], [], "failed", str(e)[:300]
 
             for pt in points:
                 pt["Panel"] = f"pnl-{self._clean_system_name(chunk.label)}"
                 pt["Source_Section"] = chunk.label
                 pt["Source_Pages"] = chunk.page_range
             all_points.extend(points)
+            if narrative:
+                self.section_narratives[chunk.label] = narrative
 
             self.section_results.append({
                 "section": chunk.label,
@@ -510,8 +519,11 @@ DOCUMENT:
         return merged
 
     # Bump when the extraction prompt changes, so cached results from an
-    # older prompt are not silently reused.
-    PROMPT_VERSION = "1"
+    # older prompt are not silently reused. Bumped for the narrative +
+    # object-response-shape change - a cache entry from the old prompt is
+    # a bare list, not the {"points":..., "narrative":...} shape the
+    # caller now expects, and would break rather than just miss narrative.
+    PROMPT_VERSION = "2"
 
     def _cache_key(self, chunk):
         payload = "|".join((self.PROMPT_VERSION, self.EXTRACTION_MODEL,
@@ -542,55 +554,95 @@ DOCUMENT:
         return re.sub(r'\s+', ' ', name).strip() or "GENERAL"
 
     def _extract_points_from_section(self, chunk):
-        """Run one extraction call scoped to a single SOO section."""
+        """Run one extraction call scoped to a single SOO section.
+
+        Extracts two things from the same read: the discrete control
+        points (as before), and the section's own narrative scope
+        sentences - "Furnish X", "Provide Y", "shall be displayed at BMS
+        graphics" - which a real proposal states as prose, not as a bulleted
+        point list. Both are grounded in the section's actual text; the
+        narrative sentences must be copied near-verbatim, not composed,
+        for the same reason point Evidence is verbatim: a scope commitment
+        this tool did not actually read should not appear in a proposal
+        as if it did.
+        """
         prompt = f"""You are a BMS point list expert reading ONE section of a
-Sequence of Operations. Extract every control point described in this section.
+Sequence of Operations.
 
 SECTION: {chunk.label}
 SOURCE PAGES: {chunk.page_range}
 
-Return ONLY a JSON array, no prose and no code fences:
+Return ONLY this JSON object, no prose and no code fences:
 
-[
-  {{
-    "Panel": "pnl-MER-1",
-    "Equipment": "ASHP-1",
-    "Point_Name": "Compressor Status",
-    "Control Device": "Current Switch",
-    "AI": "", "BI": "1", "AO": "", "BO": "",
-    "Qty": "1",
-    "Description": "Status indication from compressor",
-    "Evidence": "short verbatim phrase from the text below that this point came from"
-  }}
-]
+{{
+  "narrative": [
+    "Near-verbatim scope sentence from this section, e.g. what will be furnished, provided, or displayed"
+  ],
+  "points": [
+    {{
+      "Panel": "pnl-MER-1",
+      "Equipment": "ASHP-1",
+      "Point_Name": "Compressor Status",
+      "Control Device": "Current Switch",
+      "AI": "", "BI": "1", "AO": "", "BO": "",
+      "Qty": "1",
+      "Description": "Status indication from compressor",
+      "Evidence": "short verbatim phrase from the text below that this point came from"
+    }}
+  ]
+}}
 
-Rules:
+Narrative rules:
+- Pull the section's own scope-commitment sentences: what the contractor
+  will furnish, provide, install, wire, monitor, or display - phrasing
+  like "Furnish...", "Provide...", "shall be displayed at BMS graphics".
+  Rephrase only lightly (drop numbering, fix pronouns like "the BMS
+  contractor shall" -> "we will"); do not compose new scope language or
+  summarize - if a sentence is not close to something actually written in
+  the section, it does not belong here.
+- Skip generic administrative sentences (references to other spec
+  sections, coordination boilerplate) - only scope actually being
+  committed to.
+- If this section has no narrative scope sentences distinct from its
+  points, return an empty list.
+
+Point rules:
 - Temperature, pressure, humidity, flow and position feedback = AI
 - On/off status, alarms, proof, and command feedback = BI
 - Modulating valve, damper and speed commands = AO
 - Start/stop and enable commands = BO
 - Set exactly one of AI/BI/AO/BO to "1"; leave the other three as ""
+- A point with no true physical I/O type (a calculated/derived value like
+  enthalpy or wet-bulb temperature computed from other points, not read
+  from a device) still belongs in points - set AI/BI/AO/BO all to "" for
+  it rather than forcing a false I/O type or omitting the point entirely.
 - Control Device is the general TYPE of field device that implements this
   point - e.g. "Temperature Sensor", "Humidity Sensor", "Pressure
   Transmitter", "Current Switch", "Differential Pressure Switch",
   "Modulating Actuator", "Two-Position Actuator", "VFD", "Relay",
-  "End Switch". Infer it from the point's function and I/O type. Do NOT
-  invent a manufacturer or model number - the SOO does not specify hardware
+  "End Switch". For a calculated point with no field device, leave this
+  blank. Infer it from the point's function and I/O type. Do NOT invent a
+  manufacturer or model number - the SOO does not specify hardware
   makes/models, only the sequence text does, so a specific product name
   here would be fabricated, not extracted.
 - Qty is the number of identical points; if the text says a quantity of
   equipment (for example "four pumps"), give the per-equipment point once
   and set Qty to that number
 - Use equipment tags exactly as written in the text. Do not invent tags.
+- Some sections describe system-level points with no specific equipment
+  tag at all (e.g. a shared outside-air sensing station, not tied to one
+  piece of tagged equipment). When the section genuinely names no tag,
+  leave Equipment blank rather than inventing one - a blank tag on a
+  genuinely tagless point is correct, not an error.
 - Evidence must be copied verbatim from the section text, under 15 words
 - Extract ONLY from the section text below. Do not add points from memory
   or from other systems you would expect to see.
-- If this section describes no control points, return []
+- If this section describes no control points, return an empty points list.
 
 SECTION TEXT:
 {chunk.text}"""
 
-        message = self._call_claude(prompt, max_tokens=8000,
+        message = self._call_claude(prompt, max_tokens=8500,
                                     model=self.EXTRACTION_MODEL)
         text = self._extract_text(message).strip()
         if not text:
@@ -600,12 +652,54 @@ SECTION TEXT:
         cleaned = re.sub(r'```\s*', '', cleaned)
         stop_reason = getattr(message, "stop_reason", "unknown")
 
-        points = self._parse_point_array(cleaned, stop_reason)
-        if self.point_list_truncated:
-            # Sized to avoid this, so if it happens the section is unusually
-            # dense and the caller needs to know rather than assume.
+        start = cleaned.find('{')
+        if start < 0:
+            raise ValueError(
+                "Section extraction: no JSON object in response "
+                "(stop_reason=%s). First 300 chars:\n%s"
+                % (stop_reason, cleaned[:300])
+            )
+        cleaned = cleaned[start:]
+
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            parsed = self._salvage_balanced(cleaned)
+
+            # If "points" itself was cut off mid-array, it never reached
+            # depth 1 to count as a completed top-level key, so the salvage
+            # above drops it entirely - the same failure mode seen with
+            # labor_estimate.systems. Recover it directly by position
+            # regardless of what happened to narrative around it.
+            if parsed is None or not parsed.get("points"):
+                points_start = self._find_value_start(cleaned, "points")
+                if points_start is not None:
+                    points_salvaged = self._salvage_balanced(cleaned[points_start:])
+                    if points_salvaged:
+                        parsed = parsed if isinstance(parsed, dict) else {}
+                        parsed["points"] = points_salvaged
+                        parsed.setdefault("narrative", [])
+
+            if not parsed or "points" not in parsed:
+                raise ValueError(
+                    "Section extraction: response was truncated before "
+                    "even one point finished (stop_reason=%s). "
+                    "Last 300 chars:\n%s" % (stop_reason, cleaned[-300:])
+                )
+            self.point_list_truncated = True
             self.section_results_truncated = True
-        return points
+
+        if not isinstance(parsed, dict):
+            raise ValueError("Section extraction: response was not a JSON object")
+
+        points = parsed.get("points", [])
+        narrative = parsed.get("narrative", [])
+        if not isinstance(points, list):
+            points = []
+        if not isinstance(narrative, list):
+            narrative = []
+
+        return points, [str(n).strip() for n in narrative if str(n).strip()]
 
     def _merge_points(self, points):
         """Collapse exact repeats inside a section; keep cross-section repeats.
@@ -647,13 +741,23 @@ SECTION TEXT:
     def _assign_confidence(self, points, chunks):
         """Grade each point by how directly the source text supports it.
 
-        high   - equipment tag appears verbatim in its source section, the
-                 evidence phrase is present in that text, and exactly one
-                 I/O type is set
-        medium - tag is verbatim but the classification or evidence could
-                 not be corroborated
-        low    - tag does not appear in the source text, or the point spans
-                 multiple sections, or no single I/O type was assigned
+        high   - the evidence phrase is verbatim in its source section,
+                 the I/O type is unambiguous, and if a tag is given it
+                 appears verbatim too
+        medium - evidence could not be corroborated, but nothing else
+                 about the point looks wrong
+        low    - a claimed equipment tag does NOT appear in the source
+                 text (likely fabricated), more than one I/O type was
+                 set, or the point spans multiple sections
+
+        A blank Equipment tag is not itself a penalty. Some SOO sections
+        describe system-level points with no tagged equipment at all - a
+        shared outside-air sensing station, for example - and that is a
+        correct absence, not a sign of a bad extraction. Only a tag that
+        was actually given but does not appear in the text is treated as
+        suspect. Likewise, zero I/O flags is valid for a calculated point
+        (enthalpy, wet-bulb - derived from other points, not read from a
+        device); only MORE than one flag set is a real ambiguity.
         """
         by_label = {c.label: c.text for c in chunks}
 
@@ -662,13 +766,14 @@ SECTION TEXT:
             tag = str(pt.get("Equipment", "")).strip()
             evidence = str(pt.get("Evidence", "")).strip()
 
-            io_flags = [pt.get(k) for k in ("AI", "BI", "AO", "BO")]
-            single_io = sum(1 for f in io_flags if str(f).strip()) == 1
+            io_count = sum(1 for k in ("AI", "BI", "AO", "BO")
+                          if str(pt.get(k, "")).strip())
+            io_ambiguous = io_count > 1  # 0 is valid (calculated point)
 
-            tag_verbatim = bool(tag) and tag.upper() in source_text.upper()
+            tag_suspect = bool(tag) and tag.upper() not in source_text.upper()
             evidence_found = bool(evidence) and evidence.lower() in source_text.lower()
 
-            if not tag_verbatim or not single_io or pt.get("Repeats_In_Sections"):
+            if tag_suspect or io_ambiguous or pt.get("Repeats_In_Sections"):
                 pt["Confidence"] = "low"
             elif evidence_found:
                 pt["Confidence"] = "high"
@@ -967,6 +1072,7 @@ SECTION TEXT:
             "point_list": points,
             "labor_estimate": labor,
             "rfis": rfis,
+            "section_narratives": self.section_narratives,
             "metadata": {
                 "soo_pages": self.soo_text.count("--- PAGE"),
                 "soo_characters": len(self.soo_text),

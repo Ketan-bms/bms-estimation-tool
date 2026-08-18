@@ -140,6 +140,7 @@ class OutputGenerator:
             labor = analysis_results.get("labor_estimate", {})
             rfis = analysis_results.get("rfis", {})
             points = analysis_results.get("point_list", [])
+            section_narratives = analysis_results.get("section_narratives", {})
             metadata = analysis_results.get("metadata", {})
 
             # ===== TITLE =====
@@ -199,6 +200,14 @@ class OutputGenerator:
                     )
                     heading_run.font.bold = True
                     heading_run.font.size = Pt(12)
+
+                    # Narrative scope sentences pulled from the section's
+                    # own text - "Furnish...", "Provide..." - read before
+                    # the point bullets, matching how a real scope section
+                    # actually presents: prose describing what will be
+                    # done, then the specific points as a supporting list.
+                    for sentence in section_narratives.get(section, []):
+                        doc.add_paragraph(sentence)
 
                     # Sub-group by equipment tag within the system, and only
                     # present high/medium confidence points as firm scope -
