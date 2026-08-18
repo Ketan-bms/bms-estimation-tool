@@ -111,7 +111,7 @@ class OutputGenerator:
         regardless of which source produced them.
         """
         name = section_label.rsplit(" - ", 1)[-1]
-        name = re.sub(r'^\s*(\d+\.\d+|[A-Z]{1,2})\.?\s+', '', name)
+        name = re.sub(r'^\s*(\d+\.\d+|\d+|[A-Z]{1,2})\.?\s+', '', name)
         name = re.sub(r'\s*\(part \d+/\d+\)\s*$', '', name)
         name = re.sub(r'\s+', ' ', name).strip() or section_label
         return cls._normalize_title_case(name)
@@ -209,47 +209,66 @@ class OutputGenerator:
                     for sentence in section_narratives.get(section, []):
                         doc.add_paragraph(sentence)
 
-                    # Sub-group by equipment tag within the system, and only
-                    # present high/medium confidence points as firm scope -
-                    # a client-facing document should not state unverified
-                    # extractions with the same certainty as verified ones.
-                    firm = [p for p in section_points
-                           if p.get("Confidence", "low") in ("high", "medium")]
-                    uncertain = [p for p in section_points
-                                if p.get("Confidence", "low") == "low"]
-
+                    # Show every extracted point - no confidence filtering
+                    # here. Confidence grading is a review aid for the
+                    # Points tab and Excel export, where a human checks the
+                    # work before it goes anywhere; a real completed
+                    # proposal states scope plainly, the same way every
+                    # real example reviewed for this format does, with no
+                    # hedging language in the delivered document.
                     equip_order = []
                     by_equip = {}
-                    for pt in firm:
-                        tag = pt.get("Equipment", "") or "General"
+                    for pt in section_points:
+                        raw_tag = str(pt.get("Equipment", "")).strip()
+                        tag = raw_tag or "General"
                         if tag not in by_equip:
                             by_equip[tag] = []
                             equip_order.append(tag)
                         by_equip[tag].append(pt)
 
-                    for tag in equip_order:
-                        if len(equip_order) > 1:
-                            tag_para = doc.add_paragraph()
-                            tag_run = tag_para.add_run(tag)
-                            tag_run.font.bold = True
-                            tag_run.font.italic = True
-                        if by_equip[tag]:
-                            doc.add_paragraph("We will provide the following hardwired points:")
-                        for pt in by_equip[tag]:
+                    # Real proposals list every equipment tag for a system
+                    # on one line - "Energy Recovery Units: ERU-08-01,
+                    # ERU-08-02, ..." - even when there is only one tag,
+                    # followed by ONE shared point list when every tag
+                    # carries the same points (multiple instances of one
+                    # equipment type). Tags are only split into separate
+                    # sub-lists when they genuinely have different points -
+                    # a section covering two distinct equipment types, for
+                    # example a pump and a heat exchanger. A genuinely
+                    # tagless system (no equipment named anywhere in that
+                    # SOO section) gets no fabricated "General:" heading -
+                    # none of the real documents this was checked against
+                    # label an untagged system that way, they just move
+                    # straight from narrative to the point list.
+                    point_sets = {
+                        tag: frozenset(p.get("Point_Name", "") for p in pts)
+                        for tag, pts in by_equip.items()
+                    }
+                    same_points_throughout = len(set(point_sets.values())) <= 1
+                    only_tagless = equip_order == ["General"]
+
+                    if equip_order and same_points_throughout:
+                        if not only_tagless:
+                            tag_line = doc.add_paragraph()
+                            tag_line.add_run(", ".join(equip_order)).font.bold = True
+                        doc.add_paragraph("We will provide the following hardwired points:")
+                        for pt in by_equip[equip_order[0]]:
                             name = pt.get("Point_Name", "")
                             qty = pt.get("Qty", "")
                             label = f"{name} (Qty. {qty})" if str(qty) not in ("", "1") else name
                             doc.add_paragraph(label, style='List Bullet')
-
-                    if uncertain:
-                        note = doc.add_paragraph()
-                        note_run = note.add_run(
-                            f"Note: {len(uncertain)} additional point(s) identified in this "
-                            f"section with lower confidence - verify against SOO p{pages} "
-                            f"before including in final scope."
-                        )
-                        note_run.font.italic = True
-                        note_run.font.size = Pt(9)
+                    else:
+                        for tag in equip_order:
+                            if tag != "General":
+                                tag_para = doc.add_paragraph()
+                                tag_run = tag_para.add_run(tag)
+                                tag_run.font.bold = True
+                            doc.add_paragraph("We will provide the following hardwired points:")
+                            for pt in by_equip[tag]:
+                                name = pt.get("Point_Name", "")
+                                qty = pt.get("Qty", "")
+                                label = f"{name} (Qty. {qty})" if str(qty) not in ("", "1") else name
+                                doc.add_paragraph(label, style='List Bullet')
 
                     doc.add_paragraph()
             else:

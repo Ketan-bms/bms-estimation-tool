@@ -548,7 +548,7 @@ DOCUMENT:
         # Use the innermost segment if this is a subsection of a subsection.
         name = label.rsplit(" - ", 1)[-1]
         # Strip a leading numbered ("1.8 ") or lettered ("A. ", "AA. ") marker.
-        name = re.sub(r'^\s*(\d+\.\d+|[A-Z]{1,2})\.?\s+', '', name)
+        name = re.sub(r'^\s*(\d+\.\d+|\d+|[A-Z]{1,2})\.?\s+', '', name)
         # Strip a trailing "(part N/M)" paragraph-split marker, if present.
         name = re.sub(r'\s*\(part \d+/\d+\)\s*$', '', name)
         return re.sub(r'\s+', ' ', name).strip() or "GENERAL"
