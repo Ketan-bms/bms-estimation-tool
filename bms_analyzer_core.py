@@ -80,7 +80,7 @@ class BMSAnalyzer:
 
         These were originally three separate calls, each sending the entire
         document. On a large SOO that means the full text goes to the
-        priciest model three times over - for 175 Park's ~335,000 characters
+        priciest model three times over - for a 300+ page specification
         that is roughly 250,000 input tokens for this stage alone, often
         exceeding the cost of every per-section extraction call combined.
         None of the three tasks needs its own read: scope, labour and RFI

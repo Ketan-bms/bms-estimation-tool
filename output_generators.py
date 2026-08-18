@@ -572,10 +572,10 @@ if __name__ == "__main__":
         results = json.load(f)
     
     # Generate outputs
-    generator = OutputGenerator(template_docx_path="175_Park_Avenue_Proposal.docx")
+    generator = OutputGenerator(template_docx_path="proposal_template.docx")
     
     generator.export_all_outputs(
         analysis_results=results,
-        project_name="175_Park_Avenue",
+        project_name="Example_Project",
         output_dir="./outputs"
     )
