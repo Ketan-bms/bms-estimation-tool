@@ -117,14 +117,18 @@ class OutputGenerator:
         return cls._normalize_title_case(name)
 
     def generate_word_proposal(self, analysis_results, project_name, output_path):
-        """Generate a system-wise scope-of-work document.
+        """Generate a system-wise scope-of-work summary.
 
+        Deliberately content-only: no letterhead, salutation, standard
+        company boilerplate, or closing signature. This is meant to be
+        pasted into an existing client-facing proposal template that
+        already has all of that, not to stand alone as a formatted letter.
         Grouped by SOO system rather than a flat point table, mirroring how
         an estimator actually reads a scope section: one block per system,
         sub-grouped by equipment tag, with plain bulleted point names. No
         bid-letter metadata (bid number, drawing references, pricing) is
-        included, since none of that data exists in this pipeline - a
-        placeholder or fabricated value would be worse than leaving it out.
+        included either, since none of that data exists in this pipeline -
+        a placeholder or fabricated value would be worse than leaving it out.
         """
         try:
             if self.template_docx_path:
@@ -138,42 +142,15 @@ class OutputGenerator:
             points = analysis_results.get("point_list", [])
             metadata = analysis_results.get("metadata", {})
 
-            # ===== LETTERHEAD =====
+            # ===== TITLE =====
+            # No letterhead, salutation, or standard company boilerplate -
+            # this is meant to be pasted directly into an existing client
+            # proposal template that already has all of that, not to stand
+            # alone as a formatted letter.
             title = doc.add_paragraph()
-            title_run = title.add_run(f"Re: {project_name}")
-            title_run.font.size = Pt(14)
+            title_run = title.add_run(f"{project_name} - Scope Summary")
+            title_run.font.size = Pt(16)
             title_run.font.bold = True
-            doc.add_paragraph(f"Date: {self.timestamp}")
-            doc.add_paragraph()
-
-            doc.add_paragraph("To All Bidders:")
-            doc.add_paragraph(
-                "As an authorized representative of Honeywell, Inc., we are "
-                "pleased to provide our scope of work for the Automatic "
-                "Temperature Controls and Building Automation Systems, based "
-                "on our review of the provided Sequence of Operations."
-            )
-
-            # ===== SCOPE OF WORK (standard commitments) =====
-            # This lettered block is standard company-wide language that
-            # appears near-verbatim across every real proposal reviewed -
-            # not derived from the SOO, so it is safe to include without
-            # any project-specific data behind it.
-            doc.add_heading("Scope of Work:", level=1)
-            standard_provisions = [
-                "Provide Honeywell Comfort Point Open stand-alone BMS "
-                "systems and installation services to meet the requirements "
-                "of the project specifications, designed to control the "
-                "equipment identified in the sections below.",
-                "Provide Honeywell DDC controllers networked to the "
-                "converged network provided by others.",
-                "Provide Honeywell Enterprise Building Integrator graphical "
-                "user interface software package with required server "
-                "support hardware, as necessary to support the features "
-                "and functions defined below.",
-            ]
-            for item in standard_provisions:
-                doc.add_paragraph(item, style='List Bullet')
             doc.add_paragraph()
 
             # ===== OVERVIEW =====
@@ -321,14 +298,6 @@ class OutputGenerator:
                     )
                     assumptions_run.font.italic = True
                     assumptions_run.font.size = Pt(9)
-
-            # ===== CLOSING =====
-            doc.add_paragraph()
-            doc.add_paragraph("If we can be of any further assistance, please contact our office.")
-            doc.add_paragraph()
-            doc.add_paragraph("Sincerely,")
-            sig = doc.add_paragraph()
-            sig.add_run("TEC Building Systems, LLC").font.bold = True
 
             doc.save(output_path)
             return True
