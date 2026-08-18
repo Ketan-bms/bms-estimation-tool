@@ -577,6 +577,14 @@ if soo_file:
                     f"Analysis complete. This run used {total_in:,} input and "
                     f"{total_out:,} output tokens, about ${run_cost:.2f}."
                 )
+                if analysis_results.get("metadata", {}).get("analysis_truncated"):
+                    st.warning(
+                        "The combined scope/labor/RFI response hit its length "
+                        "limit on this document. Whichever sections finished "
+                        "first (usually scope and labor) were recovered; "
+                        "anything after the cutoff (often RFIs) may be missing "
+                        "or empty - check the RFIs tab before relying on it."
+                    )
 
             except Exception as e:
                 st.error(f"Error during analysis: {e}")

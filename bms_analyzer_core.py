@@ -24,6 +24,7 @@ class BMSAnalyzer:
         self.analysis_results = {}
         self.point_list_truncated = False
         self.section_results_truncated = False
+        self.analysis_truncated = False
         self.section_results = []
         self.coverage = {}
         # Maps a hash of (section text + model + prompt version) to the
@@ -180,8 +181,10 @@ complete Sequence of Operations. {total_points} control points have already
 been extracted from it section by section.
 
 Produce {'FOUR' if spec_text.strip() else 'THREE'} analyses from a single
-read of the document(s) below. Return ONLY this JSON object, no markdown,
-no commentary:
+read of the document(s) below. Return ONLY this JSON object as COMPACT
+JSON - no markdown, no commentary, and no indentation or line-break
+whitespace between fields, since every extra character here is budget
+taken away from a document with {len(panels)} systems to cover:
 
 {{
   "scope": {{
@@ -255,9 +258,18 @@ DOCUMENT:
         # summary - scale the budget so a 58-system document (175+ page
         # SOOs) doesn't get its labor table truncated the same way the
         # point list would without per-section chunking.
-        base_tokens = 2500
-        per_panel_tokens = 90
-        spec_tokens = 500 if spec_text.strip() else 0
+        #
+        # These numbers were raised after a real failure: the original
+        # estimate (2500 base + 90/panel) undershot badly on a 58-panel
+        # document, cutting the response off mid-RFI. Two things were
+        # under-budgeted - long panel names inflate each labor row well
+        # past the original per-row estimate, and nothing accounted for
+        # RFI text, which turned out to run to full sentences per item,
+        # not short phrases. Raised with real margin rather than a small
+        # bump on top of a number that already proved wrong once.
+        base_tokens = 3500
+        per_panel_tokens = 220
+        spec_tokens = 800 if spec_text.strip() else 0
         max_tokens = base_tokens + len(panels) * per_panel_tokens + spec_tokens
 
         message = self._call_claude(prompt, max_tokens=max_tokens)
@@ -715,39 +727,110 @@ SECTION TEXT:
         return "\n".join(parts).strip()
 
     def _parse_analysis_response(self, text, message):
-        """Parse the combined scope/labor/RFI response, loudly on failure.
+        """Parse the combined scope/labor/RFI response.
 
-        This response now scales with panel count (one labor row per
-        system), so a document with many systems is the one most likely to
-        hit its token budget mid-response. The generic parser used
-        elsewhere in this file swallows that as an empty {} - fine for a
-        single small field, but here it would silently blank out scope and
-        RFIs along with labor. Raising with the stop_reason and response
-        tail makes a truncated run diagnosable instead of looking like "no
-        RFIs were found."
+        This response scales with panel count (one labor row per system),
+        so a document with many systems is the one most likely to hit its
+        token budget mid-response - which happened on a real 58-panel
+        document: the response was cut off partway through the RFIs list,
+        after scope and the full labor table had already been generated
+        completely.
+
+        A hard failure there would have discarded a complete, usable labor
+        table over an incomplete RFI list - the least important of the
+        three sections lost to truncation, taking the other two down with
+        it. Instead, salvage recovers whichever top-level keys (scope,
+        labor_estimate, rfis, spec_cross_check) finished completely, in
+        the order the model wrote them, and only the trailing incomplete
+        one is dropped. self.analysis_truncated records that this
+        happened so the caller can say so rather than presenting a
+        partial result as complete.
         """
+        self.analysis_truncated = False
         cleaned = re.sub(r'```json\s*', '', text.strip())
         cleaned = re.sub(r'```\s*', '', cleaned)
 
         start = cleaned.find('{')
         end = cleaned.rfind('}')
-        if start < 0 or end <= start:
+        if start < 0:
             raise ValueError(
                 "Combined analysis: no JSON object found in response "
                 "(stop_reason=%s). First 300 chars:\n%s"
                 % (getattr(message, "stop_reason", "unknown"), cleaned[:300])
             )
 
+        if end > start:
+            try:
+                return json.loads(cleaned[start:end + 1])
+            except json.JSONDecodeError:
+                pass  # fall through to salvage
+
+        salvaged = self._salvage_top_level_object(cleaned[start:])
+        if salvaged is not None:
+            self.analysis_truncated = True
+            return salvaged
+
+        raise ValueError(
+            "Combined analysis: JSON was malformed and nothing could be "
+            "salvaged (stop_reason=%s). This usually means the response "
+            "was truncated before even one section (scope, labor, RFIs) "
+            "finished - most likely this document's panel count exceeds "
+            "the current token budget by a wide margin. Last 300 chars:\n%s"
+            % (getattr(message, "stop_reason", "unknown"), cleaned[-300:])
+        )
+
+    @staticmethod
+    def _salvage_top_level_object(text):
+        """Recover the largest valid object from JSON text that may be
+        truncated mid-value, keeping only fully-completed top-level keys.
+
+        Walks the text tracking bracket depth and string state (respecting
+        escaped quotes, so a literal '}' inside a string value is not
+        mistaken for a real closing brace). Every time depth returns to 1 -
+        back at the outer object's own level - a top-level key's value has
+        just finished, and that position is recorded. Whatever comes after
+        the last such position is an incomplete trailing key and is cut,
+        not repaired; there is no way to know what a half-written value
+        was going to say.
+        """
+        depth = 0
+        in_string = False
+        escape = False
+        last_complete_end = None
+
+        for i, ch in enumerate(text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == '\\':
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch in '{[':
+                depth += 1
+            elif ch in '}]':
+                depth -= 1
+                if depth == 1:
+                    last_complete_end = i + 1
+            elif ch == ',' and depth == 1:
+                last_complete_end = i
+
+        if last_complete_end is None:
+            return None
+
+        candidate = text[:last_complete_end].rstrip()
+        if candidate.endswith(','):
+            candidate = candidate[:-1]
+        candidate += '}'
+
         try:
-            return json.loads(cleaned[start:end + 1])
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                "Combined analysis: JSON was malformed (%s). This usually "
-                "means the response was truncated - stop_reason was '%s', "
-                "likely because this document has too many systems for the "
-                "current token budget. Last 300 chars:\n%s"
-                % (e, getattr(message, "stop_reason", "unknown"), cleaned[-300:])
-            ) from e
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
 
     def _parse_json_response(self, text):
         """Parse JSON from Claude response, handling markdown"""
@@ -827,6 +910,7 @@ SECTION TEXT:
                 "soo_pages": self.soo_text.count("--- PAGE"),
                 "soo_characters": len(self.soo_text),
                 "point_list_truncated": self.section_results_truncated,
+                "analysis_truncated": self.analysis_truncated,
                 "total_points_extracted": len(points),
                 "total_i_o_count": sum(self._num_qty(p) for p in points),
                 "coverage": self.coverage,
