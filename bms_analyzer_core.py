@@ -294,6 +294,7 @@ DOCUMENT:
                 points, status, detail = [], "failed", str(e)[:300]
 
             for pt in points:
+                pt["Panel"] = f"pnl-{self._clean_system_name(chunk.label)}"
                 pt["Source_Section"] = chunk.label
                 pt["Source_Pages"] = chunk.page_range
             all_points.extend(points)
@@ -323,6 +324,29 @@ DOCUMENT:
                             chunk.label, chunk.text))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _clean_system_name(label):
+        """Strip section numbering/lettering from a chunk label for use as
+        a panel name, e.g. "1.8 PRIMARY CONDENSER WATER SYSTEM" -> "PRIMARY
+        CONDENSER WATER SYSTEM", or a subsectioned label like "3.2 SEQUENCE
+        OF OPERATION - A. Energy Recovery Unit" -> "Energy Recovery Unit"
+        (the innermost, most specific part of the label - a subsection is a
+        more useful panel grouping than its parent section).
+
+        Set once here rather than left to the model per point: every point
+        extracted from the same chunk must share the exact same Panel
+        value, and a model asked to produce that string independently for
+        each point risks drifting between "pnl-Primary Condenser Water" on
+        one point and "pnl-PCW System" on the next.
+        """
+        # Use the innermost segment if this is a subsection of a subsection.
+        name = label.rsplit(" - ", 1)[-1]
+        # Strip a leading numbered ("1.8 ") or lettered ("A. ", "AA. ") marker.
+        name = re.sub(r'^\s*(\d+\.\d+|[A-Z]{1,2})\.?\s+', '', name)
+        # Strip a trailing "(part N/M)" paragraph-split marker, if present.
+        name = re.sub(r'\s*\(part \d+/\d+\)\s*$', '', name)
+        return re.sub(r'\s+', ' ', name).strip() or "GENERAL"
+
     def _extract_points_from_section(self, chunk):
         """Run one extraction call scoped to a single SOO section."""
         prompt = f"""You are a BMS point list expert reading ONE section of a
@@ -338,6 +362,7 @@ Return ONLY a JSON array, no prose and no code fences:
     "Panel": "pnl-MER-1",
     "Equipment": "ASHP-1",
     "Point_Name": "Compressor Status",
+    "Control Device": "Current Switch",
     "AI": "", "BI": "1", "AO": "", "BO": "",
     "Qty": "1",
     "Description": "Status indication from compressor",
@@ -351,6 +376,14 @@ Rules:
 - Modulating valve, damper and speed commands = AO
 - Start/stop and enable commands = BO
 - Set exactly one of AI/BI/AO/BO to "1"; leave the other three as ""
+- Control Device is the general TYPE of field device that implements this
+  point - e.g. "Temperature Sensor", "Humidity Sensor", "Pressure
+  Transmitter", "Current Switch", "Differential Pressure Switch",
+  "Modulating Actuator", "Two-Position Actuator", "VFD", "Relay",
+  "End Switch". Infer it from the point's function and I/O type. Do NOT
+  invent a manufacturer or model number - the SOO does not specify hardware
+  makes/models, only the sequence text does, so a specific product name
+  here would be fabricated, not extracted.
 - Qty is the number of identical points; if the text says a quantity of
   equipment (for example "four pumps"), give the per-equipment point once
   and set Qty to that number
