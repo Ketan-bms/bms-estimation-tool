@@ -400,6 +400,7 @@ if soo_file:
                 with open(tmp_pdf, "wb") as f:
                     f.write(soo_file.getbuffer())
                 st.session_state.soo_text = BMSAnalyzer.extract_pdf_text(tmp_pdf)
+                st.session_state.extracted_project_name = BMSAnalyzer.extract_project_name(tmp_pdf)
         st.session_state.soo_token = file_token
         st.session_state.pop("analysis_results", None)
         st.session_state.pop("section_override", None)
@@ -593,10 +594,11 @@ if "analysis_results" in st.session_state:
 
     st.markdown('<p class="section-style">Project</p>', unsafe_allow_html=True)
     pc1, pc2 = st.columns([2, 1])
-    default_name = st.session_state.get(
-        "loaded_project",
-        soo_file.name.rsplit(".", 1)[0] if soo_file else "Untitled project",
-    )
+
+    filename_fallback = soo_file.name.rsplit(".", 1)[0] if soo_file else "Untitled project"
+    extracted_name = st.session_state.get("extracted_project_name")
+    default_name = st.session_state.get("loaded_project", extracted_name or filename_fallback)
+
     project_label = pc1.text_input("Project name", value=default_name,
                                    key="project_label")
 
@@ -750,35 +752,50 @@ if "analysis_results" in st.session_state:
     # --- TAB 3: LABOR ---
     with tab3:
         labor = results.get("labor_estimate", {})
-        
-        if labor:
-            labor_breakdown = labor.get("labor_estimate", {})
-            labor_data = []
-            total_hours = 0
-            
-            for task, data in labor_breakdown.items():
-                if isinstance(data, dict):
-                    hours = data.get("hours", 0) or 0
-                    try:
-                        hours = float(hours)
-                    except (TypeError, ValueError):
-                        hours = 0
-                    
-                    labor_data.append({
-                        "Task": task.replace("_", " ").title(),
-                        "Hours": hours,
-                    })
-                    total_hours += hours
-            
-            if labor_data:
-                st.dataframe(labor_data, use_container_width=True)
-            
+        role_totals = labor.get("role_totals", {})
+
+        if role_totals:
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Field Technician", f"{role_totals.get('tech', 0):,.1f}")
+            r2.metric("Engineering", f"{role_totals.get('eng', 0):,.1f}")
+            r3.metric("Software", f"{role_totals.get('soft', 0):,.1f}")
+            r4.metric("Graphics", f"{role_totals.get('gpc', 0):,.1f}")
+
             st.divider()
-            st.metric("Total Hours", f"{total_hours:,.0f}")
+            st.metric("Total Hours", f"{labor.get('total_hours', 0):,.1f}")
             st.caption(
                 "Hours only. Rates and cost are a separate business decision "
                 "applied outside this tool, not part of the AI-generated estimate."
             )
+
+            systems = labor.get("systems", [])
+            if systems:
+                with st.expander(f"Per-system breakdown ({len(systems)} systems)"):
+                    st.caption(
+                        "Original-vs-copy hours: Eng/Soft/Screen apply full "
+                        "hours once and reduced hours for each repeat instance; "
+                        "PanelFab/Startup/Commiss scale directly with quantity. "
+                        "The full editable version, with live formulas, is in "
+                        "the Excel estimate."
+                    )
+                    st.dataframe(
+                        [
+                            {
+                                "Panel": s.get("panel", ""),
+                                "Qty": s.get("quantity", 1),
+                                "Tech": round(s.get("tech_total", 0), 1),
+                                "Eng": round(s.get("eng_total", 0), 1),
+                                "Soft": round(s.get("soft_total", 0), 1),
+                                "Screen": round(s.get("screen_total", 0), 1),
+                                "System Total": round(s.get("system_total", 0), 1),
+                            }
+                            for s in systems
+                        ],
+                        use_container_width=True, height=300,
+                    )
+
+            if labor.get("assumptions"):
+                st.caption(f"Assumptions: {labor['assumptions']}")
         else:
             st.info("No labor estimate available")
     

@@ -196,32 +196,30 @@ class OutputGenerator:
                     doc.add_paragraph(item, style='List Bullet')
 
             # ===== LABOR (HOURS ONLY) =====
-            labor_breakdown = labor.get("labor_estimate", {})
-            if labor_breakdown:
+            role_totals = labor.get("role_totals", {})
+            if role_totals:
                 doc.add_heading("Estimated Labor (Hours)", level=1)
 
                 table = doc.add_table(rows=1, cols=2)
                 self._safe_table_style(table, 'Light Grid Accent 1')
                 header_cells = table.rows[0].cells
-                header_cells[0].text = "Task"
+                header_cells[0].text = "Role"
                 header_cells[1].text = "Hours"
                 for cell in header_cells:
                     for paragraph in cell.paragraphs:
                         for run in paragraph.runs:
                             run.font.bold = True
 
-                total_hours = 0
-                for task, data in labor_breakdown.items():
-                    if isinstance(data, dict):
-                        hours = self._num(data.get("hours"))
-                        total_hours += hours
-                        row = table.add_row()
-                        row.cells[0].text = task.replace("_", " ").title()
-                        row.cells[1].text = str(hours)
+                role_labels = {"tech": "Field Technician", "eng": "Engineering",
+                               "soft": "Software", "gpc": "Graphics"}
+                for key, label in role_labels.items():
+                    row = table.add_row()
+                    row.cells[0].text = label
+                    row.cells[1].text = f"{self._num(role_totals.get(key)):,.1f}"
 
                 total_row = table.add_row()
                 total_row.cells[0].text = "TOTAL HOURS"
-                total_row.cells[1].text = str(total_hours)
+                total_row.cells[1].text = f"{self._num(labor.get('total_hours')):,.1f}"
                 for cell in total_row.cells:
                     for paragraph in cell.paragraphs:
                         for run in paragraph.runs:
@@ -338,32 +336,95 @@ class OutputGenerator:
             ws_points.column_dimensions['C'].width = 25
             ws_points.column_dimensions['D'].width = 15
             
-            # ===== LABOR BREAKDOWN SHEET =====
+            # ===== LABOR (ES LABOR) SHEET =====
+            # Three-row header matching the real estimating format: a group
+            # label, the role each column bills to, then the actual field
+            # name. Totals are live Excel formulas, not values computed in
+            # Python - editing Quantity in the sheet recalculates every
+            # total automatically, which is the whole point of building it
+            # this way rather than writing static numbers.
             ws_labor = wb.create_sheet("Labor Estimate")
-            
-            ws_labor['A1'] = "Labor Breakdown"
-            ws_labor['A2'] = "Task"
-            ws_labor['B2'] = "Hours"
-            
-            labor_breakdown = labor.get("labor_estimate", {})
-            row = 3
-            total_hours = 0
-            
-            for task, data in labor_breakdown.items():
-                if isinstance(data, dict):
-                    hours = self._num(data.get("hours"))
-                    total_hours += hours
-                    
-                    ws_labor[f'A{row}'] = task.replace("_", " ").title()
-                    ws_labor[f'B{row}'] = hours
-                    row += 1
-            
-            # Total row
-            ws_labor[f'A{row}'] = "TOTAL"
-            ws_labor[f'B{row}'] = total_hours
-            ws_labor[f'A{row}'].font = Font(bold=True)
-            ws_labor[f'B{row}'].font = Font(bold=True)
-            
+
+            HOUR_COLS = ["PanelFabUnitHrs", "EngOrigUnitHrs", "EngCopyUnitHrs",
+                        "SoftOrigUnitHrs", "SoftCopyUnitHrs", "ScreenOrigUnitHrs",
+                        "ScreenCopyUnitHrs", "StartupUnitHrs", "CommissUnitHrs"]
+            ROLE_ROW = ["Tech", "Eng", "Eng", "Sfw", "Sfw", "Gpc", "Gpc", "Tech", "Tech"]
+            # Hour columns start at column C (A=Panel, B=Qty)
+            first_hour_col = 3
+            last_hour_col = first_hour_col + len(HOUR_COLS) - 1  # column K
+
+            header_fill = PatternFill(start_color="1F3864", end_color="1F3864", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF")
+            role_fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+
+            ws_labor.merge_cells(
+                start_row=1, start_column=first_hour_col, end_row=1, end_column=last_hour_col
+            )
+            es_cell = ws_labor.cell(1, first_hour_col)
+            es_cell.value = "ES LABOR"
+            es_cell.font = header_font
+            es_cell.fill = header_fill
+            es_cell.alignment = Alignment(horizontal="center")
+
+            for i, role in enumerate(ROLE_ROW):
+                cell = ws_labor.cell(2, first_hour_col + i)
+                cell.value = role
+                cell.font = Font(bold=True)
+                cell.fill = role_fill
+                cell.alignment = Alignment(horizontal="center")
+
+            headers_row3 = ["Panel", "Qty"] + HOUR_COLS + [
+                "TechTotalHrs", "EngTotalHrs", "SoftTotalHrs", "ScreenTotalHrs", "SystemTotalHrs"
+            ]
+            for i, h in enumerate(headers_row3, 1):
+                cell = ws_labor.cell(3, i)
+                cell.value = h
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal="center", wrap_text=True)
+
+            systems = labor.get("systems", [])
+            row = 4
+            for sys_row in systems:
+                ws_labor.cell(row, 1).value = sys_row.get("panel", "")
+                ws_labor.cell(row, 2).value = self._num(sys_row.get("quantity"), default=1)
+                for i, key in enumerate(["panel_fab_hours", "eng_orig_hours", "eng_copy_hours",
+                                         "soft_orig_hours", "soft_copy_hours", "screen_orig_hours",
+                                         "screen_copy_hours", "startup_hours", "commiss_hours"]):
+                    ws_labor.cell(row, first_hour_col + i).value = self._num(sys_row.get(key))
+
+                # Live formulas: PanelFab/Startup/Commiss scale directly with
+                # Qty; Eng/Soft/Screen apply Copy hours only to units beyond
+                # the first (MAX(Qty-1,0) so a Qty of 0 or 1 never goes
+                # negative). Editing the Qty cell recalculates all of these.
+                ws_labor.cell(row, 12).value = f"=(C{row}+J{row}+K{row})*B{row}"       # Tech
+                ws_labor.cell(row, 13).value = f"=D{row}+E{row}*MAX(B{row}-1,0)"       # Eng
+                ws_labor.cell(row, 14).value = f"=F{row}+G{row}*MAX(B{row}-1,0)"       # Soft
+                ws_labor.cell(row, 15).value = f"=H{row}+I{row}*MAX(B{row}-1,0)"       # Screen
+                ws_labor.cell(row, 16).value = f"=L{row}+M{row}+N{row}+O{row}"         # System total
+                row += 1
+
+            last_data_row = row - 1
+            if systems:
+                total_row = row
+                ws_labor.cell(total_row, 1).value = "TOTAL"
+                ws_labor.cell(total_row, 1).font = Font(bold=True)
+                for col in range(12, 17):
+                    letter = get_column_letter(col)
+                    cell = ws_labor.cell(total_row, col)
+                    cell.value = f"=SUM({letter}4:{letter}{last_data_row})"
+                    cell.font = Font(bold=True)
+
+            for col, width in [("A", 34), ("B", 6)] + [
+                (get_column_letter(c), 12) for c in range(first_hour_col, 17)
+            ]:
+                ws_labor.column_dimensions[col].width = width
+            ws_labor.freeze_panes = "C4"
+
+            if labor.get("assumptions"):
+                notes_row = row + 2
+                ws_labor.cell(notes_row, 1).value = f"Assumptions: {labor['assumptions']}"
+                ws_labor.cell(notes_row, 1).font = Font(italic=True, size=9)
+
             # ===== ANALYSIS NOTES SHEET =====
             ws_notes = wb.create_sheet("Analysis Notes")
             

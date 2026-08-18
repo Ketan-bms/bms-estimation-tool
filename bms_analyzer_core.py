@@ -71,6 +71,47 @@ class BMSAnalyzer:
         except Exception as e:
             return f"ERROR extracting PDF: {str(e)}"
     
+    _ADDRESS_LINE = re.compile(
+        r'^\s*(\d+[A-Za-z0-9\s\.]*?\b(?:Avenue|Ave|Street|St|Road|Rd|'
+        r'Boulevard|Blvd|Drive|Dr|Lane|Ln|Place|Pl|Court|Ct|Way|Parkway|'
+        r'Pkwy|Highway|Hwy|Terrace|Ter|Circle|Cir|Square|Sq)\.?)\s*'
+        r'(?:,.*)?$',
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def extract_project_name(cls, pdf_path):
+        """Find the building/project name from the document's own header.
+
+        A specification's cover text almost always states the building
+        address a few lines from the top, e.g. "655 Madison Avenue, New
+        York, New York" or "175 Park Avenue" followed by "New York, New
+        York" on the next line - well before any section numbering starts.
+        That is a far better default project name than the uploaded
+        filename, which is usually a spec section number like
+        "230993_Sequence_Of_Operations_For_HVAC_Controls".
+
+        Reads the first page directly with its own fitz call, deliberately
+        NOT via extract_pdf_text: that method runs strip_page_furniture,
+        which removes any line repeating on most pages to cut API cost -
+        and the address line is exactly that, since it repeats on every
+        page as a running header. Using the already-stripped text would
+        silently delete the one line this function needs. Returns None if
+        nothing matches, so the caller falls back to the filename.
+        """
+        try:
+            doc = fitz.open(pdf_path)
+            first_page_text = doc[0].get_text()
+            doc.close()
+        except Exception:
+            return None
+
+        for line in first_page_text.split("\n")[:40]:
+            m = cls._ADDRESS_LINE.match(line.strip())
+            if m:
+                return re.sub(r"\s+", " ", m.group(1)).strip()
+        return None
+
     # ============================================================================
     # STEP 2: SCOPE ANALYSIS (Claude AI)
     # ============================================================================
@@ -100,6 +141,16 @@ class BMSAnalyzer:
             str(p.get("Equipment", "")).strip()
             for p in point_list if str(p.get("Equipment", "")).strip()
         })
+
+        # Panels are already fixed deterministically when points are
+        # extracted (see _clean_system_name) - the model must use these
+        # exact strings as row keys, not invent its own, so the labor table
+        # lines up with the point list in Excel without a fuzzy join.
+        panels = sorted({
+            str(p.get("Panel", "")).strip()
+            for p in point_list if str(p.get("Panel", "")).strip()
+        })
+        panel_list_text = "\n".join(f"  - {p}" for p in panels) if panels else "  (none)"
 
         spec_block = ""
         spec_schema = ""
@@ -145,14 +196,20 @@ no commentary:
     }}
   }},
   "labor_estimate": {{
-    "labor_estimate": {{
-      "engineering": {{"hours": 0}},
-      "programming": {{"hours": 0}},
-      "installation": {{"hours": 0}},
-      "testing": {{"hours": 0}},
-      "training": {{"hours": 0}}
-    }},
-    "total_hours": 0,
+    "systems": [
+      {{
+        "panel": "pnl-EXACT PANEL NAME FROM THE LIST BELOW",
+        "panel_fab_hours": 0,
+        "eng_orig_hours": 0,
+        "eng_copy_hours": 0,
+        "soft_orig_hours": 0,
+        "soft_copy_hours": 0,
+        "screen_orig_hours": 0,
+        "screen_copy_hours": 0,
+        "startup_hours": 0,
+        "commiss_hours": 0
+      }}
+    ],
     "assumptions": "Brief explanation, referencing complexity drivers below"
   }},
   "rfis": {{
@@ -166,9 +223,27 @@ Guidance:
 - Scope: use {total_points} as the I/O estimate rather than recounting -
   it was produced by a dedicated section-by-section extraction pass and is
   more reliable than a count from a single read.
-- Labour: base hours on realistic NYC/Boston market rates. Weight for
-  complexity drivers - VFDs, ERUs, multiple chiller or condenser water
-  loops - and for point volume ({total_points} points).
+- Labour: one row per panel, using these EXACT panel names (do not
+  rename, merge, or add panels):
+{panel_list_text}
+  For each panel, estimate hours for a SINGLE instance of that system:
+    - panel_fab_hours: technician time to fabricate/wire the panel
+    - eng_orig_hours: engineering time to design and document this system
+      the first time
+    - eng_copy_hours: engineering time to replicate that design for one
+      additional identical unit, if this system repeats (should be well
+      below eng_orig_hours - copying a proven design is far faster than
+      originating one)
+    - soft_orig_hours / soft_copy_hours: same original-vs-copy split for
+      programming
+    - screen_orig_hours / screen_copy_hours: same split for graphics/screens
+    - startup_hours, commiss_hours: field startup and commissioning time
+      per physical unit - these scale per unit with no copy discount,
+      unlike engineering/software/graphics, since each physical unit needs
+      its own hands-on time regardless of how many came before it
+  How many actual instances of each panel exist (from "typical of N" style
+  language in the SOO) is handled separately - estimate hours for one
+  instance only. Do not multiply by quantity yourself.
 - RFIs: flag genuine ambiguities, not routine scope. Note anything that
   reads as present in a schedule but without a stated sequence, since that
   is a common source of missed scope in BMS estimating.{spec_guidance}
@@ -176,17 +251,26 @@ Guidance:
 DOCUMENT:
 {soo_text}{spec_block}"""
 
-        message = self._call_claude(
-            prompt, max_tokens=4000 if spec_text.strip() else 3500
-        )
-        parsed = self._parse_json_response(self._extract_text(message))
+        # Output now includes one labor row per panel, not a fixed 5-line
+        # summary - scale the budget so a 58-system document (175+ page
+        # SOOs) doesn't get its labor table truncated the same way the
+        # point list would without per-section chunking.
+        base_tokens = 2500
+        per_panel_tokens = 90
+        spec_tokens = 500 if spec_text.strip() else 0
+        max_tokens = base_tokens + len(panels) * per_panel_tokens + spec_tokens
+
+        message = self._call_claude(prompt, max_tokens=max_tokens)
+        raw_text = self._extract_text(message)
+        parsed = self._parse_analysis_response(raw_text, message)
 
         # A malformed or partial response should not silently produce three
         # empty sections; each key defaults independently so one bad block
         # does not erase the others.
+        raw_labor = parsed.get("labor_estimate", {}) if isinstance(parsed, dict) else {}
         result = {
             "scope": parsed.get("scope", {}) if isinstance(parsed, dict) else {},
-            "labor_estimate": parsed.get("labor_estimate", {}) if isinstance(parsed, dict) else {},
+            "labor_estimate": self._finalize_labor(raw_labor, point_list),
             "rfis": parsed.get("rfis", {}) if isinstance(parsed, dict) else {},
         }
         if spec_text.strip():
@@ -194,6 +278,104 @@ DOCUMENT:
                 parsed.get("spec_cross_check", {}) if isinstance(parsed, dict) else {}
             )
         return result
+
+    def _finalize_labor(self, raw_labor, point_list):
+        """Attach quantity and compute totals for the per-system labor table.
+
+        The model estimates raw per-unit hours only. Quantity and every
+        total shown to the user is computed here in Python, never trusted
+        to the model - an LLM asked to both estimate hours and multiply
+        them by a quantity is a needless source of arithmetic error on a
+        number that directly drives a bid.
+
+        Quantity per panel comes from the point list's own Qty field (the
+        same "typical of N" signal already captured during extraction),
+        not asked of the model a second time - reusing data already
+        extracted keeps this free of any additional judgement call that
+        could disagree with the point list.
+        """
+        qty_by_panel = {}
+        for p in point_list:
+            panel = str(p.get("Panel", "")).strip()
+            if not panel:
+                continue
+            qty_by_panel[panel] = max(qty_by_panel.get(panel, 1), self._num_qty(p))
+
+        systems = raw_labor.get("systems", []) if isinstance(raw_labor, dict) else []
+        finalized = []
+        role_totals = {"tech": 0.0, "eng": 0.0, "soft": 0.0, "gpc": 0.0}
+
+        for row in systems:
+            if not isinstance(row, dict):
+                continue
+            panel = str(row.get("panel", "")).strip()
+            qty = qty_by_panel.get(panel, 1)
+
+            def h(key):
+                return self._num(row.get(key), default=0)
+
+            panel_fab = h("panel_fab_hours")
+            eng_orig, eng_copy = h("eng_orig_hours"), h("eng_copy_hours")
+            soft_orig, soft_copy = h("soft_orig_hours"), h("soft_copy_hours")
+            screen_orig, screen_copy = h("screen_orig_hours"), h("screen_copy_hours")
+            startup, commiss = h("startup_hours"), h("commiss_hours")
+
+            eng_total = eng_orig + eng_copy * max(qty - 1, 0)
+            soft_total = soft_orig + soft_copy * max(qty - 1, 0)
+            screen_total = screen_orig + screen_copy * max(qty - 1, 0)
+            panel_fab_total = panel_fab * qty
+            startup_total = startup * qty
+            commiss_total = commiss * qty
+            tech_total = panel_fab_total + startup_total + commiss_total
+
+            finalized.append({
+                "panel": panel,
+                "quantity": qty,
+                "panel_fab_hours": panel_fab,
+                "eng_orig_hours": eng_orig,
+                "eng_copy_hours": eng_copy,
+                "soft_orig_hours": soft_orig,
+                "soft_copy_hours": soft_copy,
+                "screen_orig_hours": screen_orig,
+                "screen_copy_hours": screen_copy,
+                "startup_hours": startup,
+                "commiss_hours": commiss,
+                "tech_total": tech_total,
+                "eng_total": eng_total,
+                "soft_total": soft_total,
+                "screen_total": screen_total,
+                "system_total": tech_total + eng_total + soft_total + screen_total,
+            })
+
+            role_totals["tech"] += tech_total
+            role_totals["eng"] += eng_total
+            role_totals["soft"] += soft_total
+            role_totals["gpc"] += screen_total
+
+        grand_total = sum(role_totals.values())
+
+        return {
+            "systems": finalized,
+            "role_totals": {k: round(v, 2) for k, v in role_totals.items()},
+            "total_hours": round(grand_total, 2),
+            "assumptions": raw_labor.get("assumptions", "") if isinstance(raw_labor, dict) else "",
+        }
+
+    @staticmethod
+    def _num(value, default=0):
+        """Coerce a model-supplied value to a number, tolerating strings,
+        units, or blanks - the same defensive coercion used throughout the
+        output layer, needed here too since labor hours go through the
+        same untrusted-model-output path."""
+        if isinstance(value, (int, float)):
+            return value
+        if value is None:
+            return default
+        cleaned = re.sub(r"[^0-9.\-]", "", str(value))
+        try:
+            return float(cleaned) if cleaned not in ("", "-", ".") else default
+        except ValueError:
+            return default
 
     def _parse_point_array(self, cleaned, stop_reason):
         """Parse the point-list array, salvaging a truncated response.
@@ -531,6 +713,41 @@ SECTION TEXT:
             elif hasattr(block, "text"):
                 parts.append(block.text)
         return "\n".join(parts).strip()
+
+    def _parse_analysis_response(self, text, message):
+        """Parse the combined scope/labor/RFI response, loudly on failure.
+
+        This response now scales with panel count (one labor row per
+        system), so a document with many systems is the one most likely to
+        hit its token budget mid-response. The generic parser used
+        elsewhere in this file swallows that as an empty {} - fine for a
+        single small field, but here it would silently blank out scope and
+        RFIs along with labor. Raising with the stop_reason and response
+        tail makes a truncated run diagnosable instead of looking like "no
+        RFIs were found."
+        """
+        cleaned = re.sub(r'```json\s*', '', text.strip())
+        cleaned = re.sub(r'```\s*', '', cleaned)
+
+        start = cleaned.find('{')
+        end = cleaned.rfind('}')
+        if start < 0 or end <= start:
+            raise ValueError(
+                "Combined analysis: no JSON object found in response "
+                "(stop_reason=%s). First 300 chars:\n%s"
+                % (getattr(message, "stop_reason", "unknown"), cleaned[:300])
+            )
+
+        try:
+            return json.loads(cleaned[start:end + 1])
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "Combined analysis: JSON was malformed (%s). This usually "
+                "means the response was truncated - stop_reason was '%s', "
+                "likely because this document has too many systems for the "
+                "current token budget. Last 300 chars:\n%s"
+                % (e, getattr(message, "stop_reason", "unknown"), cleaned[-300:])
+            ) from e
 
     def _parse_json_response(self, text):
         """Parse JSON from Claude response, handling markdown"""
